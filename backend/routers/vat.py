@@ -4,6 +4,23 @@ from datetime import date
 
 router = APIRouter(prefix="/api/vat", tags=["vat"])
 
+VAT_RATES = {
+    'restaurant': 0.17,
+    'hotel': 0.03,
+    'travel': 0.17,
+    'flight': 0.17,
+    'taxi': 0.17,
+    'software': 0.17,
+    'subscription': 0.17,
+    'office': 0.17,
+    'supplies': 0.17,
+    'professional': 0.17,
+    'professional_services': 0.17,
+    'other': 0.17,
+}
+
+NON_RECOVERABLE = {'restaurant'}
+
 
 @router.get("")
 def get_vat():
@@ -18,41 +35,50 @@ def get_vat():
     """)
     output_vat = cur.fetchone()[0] or 0.0
 
-    # Input VAT recoverable = expenses with vat_recoverable=1, amount * 17%
-    cur.execute("""
-        SELECT COALESCE(SUM(amount * 0.17), 0) FROM expenses
-        WHERE date >= '2026-01-01' AND date <= '2026-03-31'
-          AND vat_recoverable = 1
-    """)
-    input_vat = cur.fetchone()[0] or 0.0
-
-    # Non-deductible total (vat_recoverable=0)
-    cur.execute("""
-        SELECT COALESCE(SUM(amount), 0) FROM expenses
-        WHERE date >= '2026-01-01' AND date <= '2026-03-31'
-          AND vat_recoverable = 0
-    """)
-    non_deductible_total = cur.fetchone()[0] or 0.0
-
-    # By category breakdown
+    # Input VAT per category using actual vat_rate and recoverable columns
     cur.execute("""
         SELECT category,
                SUM(amount) as total_amount,
-               SUM(CASE WHEN vat_recoverable = 1 THEN amount * 0.17 ELSE 0 END) as vat_recoverable,
-               SUM(CASE WHEN vat_recoverable = 0 THEN amount ELSE 0 END) as non_deductible
+               SUM(amount_vat) as total_vat,
+               SUM(vat_recoverable) as total_recoverable
         FROM expenses
         WHERE date >= '2026-01-01' AND date <= '2026-03-31'
         GROUP BY category
     """)
+
     by_category = []
+    total_input_vat = 0.0
+    total_non_recoverable_vat = 0.0
     for row in cur.fetchall():
+        cat = row["category"]
+        total_amount = row["total_amount"] or 0.0
+        total_vat = row["total_vat"] or 0.0
+        recoverable = row["total_recoverable"] or 0.0
+
+        # If vat columns are 0 (pre-migration data), calculate from rates
+        if total_vat == 0 and total_amount > 0:
+            rate = VAT_RATES.get(cat, 0.17)
+            total_vat = round(total_amount * rate, 2)
+            if cat not in NON_RECOVERABLE:
+                recoverable = total_vat
+            else:
+                recoverable = 0.0
+
+        non_recoverable = round(total_vat - recoverable, 2)
+        total_input_vat += recoverable
+        total_non_recoverable_vat += non_recoverable
+
         by_category.append({
-            "category": row["category"],
-            "total_amount": row["total_amount"],
-            "vat_recoverable": round(row["vat_recoverable"], 2),
-            "non_deductible": row["non_deductible"],
+            "category": cat,
+            "total_amount": round(total_amount, 2),
+            "vat_charged": round(total_vat, 2),
+            "vat_recoverable": round(recoverable, 2),
+            "non_recoverable": round(non_recoverable, 2),
+            "vat_rate": VAT_RATES.get(cat, 0.17),
+            "is_recoverable": cat not in NON_RECOVERABLE,
         })
 
+    input_vat = round(total_input_vat, 2)
     net_vat = round(output_vat - input_vat, 2)
 
     # Q4 2025 for comparison
@@ -63,9 +89,8 @@ def get_vat():
     q4_output = cur.fetchone()[0] or 0.0
 
     cur.execute("""
-        SELECT COALESCE(SUM(amount * 0.17), 0) FROM expenses
+        SELECT COALESCE(SUM(vat_recoverable), 0) FROM expenses
         WHERE date >= '2025-10-01' AND date <= '2025-12-31'
-          AND vat_recoverable = 1
     """)
     q4_input = cur.fetchone()[0] or 0.0
 
@@ -84,10 +109,11 @@ def get_vat():
             "quarter": "Q1",
             "year": 2026,
             "output_vat": round(output_vat, 2),
-            "input_vat": round(input_vat, 2),
+            "input_vat": input_vat,
             "net_vat": net_vat,
             "status": "pending",
             "due_date": "2026-06-15",
+            "days_until_deadline": days_until,
         },
         "previous_quarter": {
             "quarter": "Q4",
@@ -97,7 +123,7 @@ def get_vat():
             "net_vat": round(q4_output - q4_input, 2),
         },
         "by_category": by_category,
-        "non_deductible_total": round(non_deductible_total, 2),
+        "non_recoverable_total": round(total_non_recoverable_vat, 2),
         "days_until_deadline": days_until,
         "quarters": quarters,
     }

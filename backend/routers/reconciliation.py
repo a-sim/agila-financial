@@ -3,12 +3,95 @@ from database import get_connection
 from typing import Optional
 import csv
 import io
+import sys
+import subprocess
+from pathlib import Path
 from fastapi.responses import StreamingResponse
 
-router = APIRouter(prefix="/api/reconciliation", tags=["reconciliation"])
+router = APIRouter(prefix="/api", tags=["reconciliation"])
+
+SCRIPTS_DIR = Path(__file__).parent.parent.parent / "scripts"
 
 
-@router.get("")
+# ---- Sync endpoints ----
+
+@router.post("/sync/odoo")
+def sync_odoo():
+    """Trigger Odoo sync (invoices + bank entries)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "sync_odoo.py")],
+            capture_output=True, text=True, timeout=60,
+        )
+        return {
+            "status": "ok" if result.returncode == 0 else "error",
+            "output": result.stdout,
+            "errors": result.stderr if result.returncode != 0 else None,
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "errors": "Odoo sync timed out after 60s"}
+    except Exception as e:
+        return {"status": "error", "errors": str(e)}
+
+
+@router.post("/sync/telegram")
+def sync_telegram():
+    """Trigger Telegram receipts sync."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "sync_telegram.py")],
+            capture_output=True, text=True, timeout=30,
+        )
+        return {
+            "status": "ok" if result.returncode == 0 else "error",
+            "output": result.stdout,
+            "errors": result.stderr if result.returncode != 0 else None,
+        }
+    except Exception as e:
+        return {"status": "error", "errors": str(e)}
+
+
+@router.post("/reconcile")
+def reconcile():
+    """Trigger the reconciliation engine."""
+    try:
+        from backend.services.reconciliation import run_reconciliation
+        summary = run_reconciliation()
+        return {"status": "ok", "summary": summary}
+    except Exception as e:
+        return {"status": "error", "errors": str(e)}
+
+
+@router.get("/sync/status")
+def sync_status():
+    """Get last sync timestamps from sync_log."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT source, action, records_affected, status, error, synced_at
+        FROM sync_log
+        ORDER BY synced_at DESC
+        LIMIT 20
+    """)
+    logs = [dict(row) for row in cur.fetchall()]
+
+    # Last sync per source
+    cur.execute("""
+        SELECT source, MAX(synced_at) as last_sync, status
+        FROM sync_log
+        GROUP BY source
+    """)
+    last_syncs = {row["source"]: {"last_sync": row["last_sync"], "status": row["status"]}
+                  for row in cur.fetchall()}
+
+    conn.close()
+    return {"last_syncs": last_syncs, "recent_logs": logs}
+
+
+# ---- Existing reconciliation_data endpoints ----
+
+@router.get("/reconciliation")
 def get_reconciliation(
     period: Optional[str] = None,
     match_status: Optional[str] = None,
@@ -141,7 +224,7 @@ def get_reconciliation(
     }
 
 
-@router.get("/export")
+@router.get("/reconciliation/export")
 def export_csv(
     period: Optional[str] = None,
     match_status: Optional[str] = None,

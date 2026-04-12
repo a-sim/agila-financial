@@ -10,9 +10,12 @@ def get_bank():
     cur = conn.cursor()
 
     # Bank transactions from Odoo sync
-    cur.execute(
-        "SELECT * FROM bank_transactions ORDER BY date DESC LIMIT 50"
-    )
+    cur.execute("""
+        SELECT id, odoo_id, date, amount, currency, partner, description,
+               category, source, journal_name, match_confidence,
+               reconciliation_status, matched_to_expense_id, matched_to_invoice_id
+        FROM bank_transactions ORDER BY date DESC LIMIT 100
+    """)
     transactions = [dict(row) for row in cur.fetchall()]
 
     # Monthly totals
@@ -30,6 +33,14 @@ def get_bank():
     cur.execute("SELECT SUM(amount) FROM bank_transactions")
     balance = cur.fetchone()[0] or 0.0
 
+    # Reconciliation summary
+    cur.execute("SELECT COUNT(*) FROM bank_transactions")
+    total = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM bank_transactions WHERE reconciliation_status = 'matched'")
+    matched = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM bank_transactions WHERE reconciliation_status = 'unmatched'")
+    unmatched = cur.fetchone()[0] or 0
+
     conn.close()
 
     return {
@@ -37,4 +48,7 @@ def get_bank():
         "monthly": monthly,
         "balance": balance,
         "count": len(transactions),
+        "total": total,
+        "matched": matched,
+        "unmatched": unmatched,
     }
