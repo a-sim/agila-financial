@@ -155,6 +155,7 @@ async function triggerSync() {
   if (btn) { btn.disabled = true; btn.textContent = "Syncing..."; }
   try {
     await fetch("/api/sync/odoo", {method:"POST"}).then(function(r){return r.json()});
+    await fetch("/api/sync/onedrive", {method:"POST"}).then(function(r){return r.json()});
     await fetch("/api/sync/telegram", {method:"POST"}).then(function(r){return r.json()});
     await fetch("/api/reconcile", {method:"POST"}).then(function(r){return r.json()});
     if (btn) btn.textContent = "Sync Complete";

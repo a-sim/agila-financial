@@ -51,6 +51,25 @@ def sync_telegram():
         return {"status": "error", "errors": str(e)}
 
 
+@router.post("/sync/onedrive")
+def sync_onedrive():
+    """Trigger OneDrive receipt scan."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "sync_onedrive.py")],
+            capture_output=True, text=True, timeout=120,
+        )
+        return {
+            "status": "ok" if result.returncode == 0 else "error",
+            "output": result.stdout,
+            "errors": result.stderr if result.returncode != 0 else None,
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "errors": "OneDrive scan timed out after 120s"}
+    except Exception as e:
+        return {"status": "error", "errors": str(e)}
+
+
 @router.post("/reconcile")
 def reconcile():
     """Trigger the reconciliation engine."""
