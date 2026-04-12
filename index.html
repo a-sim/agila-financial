@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agila Financial Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1623;
+      --surface: #1a2234;
+      --surface2: #232f47;
+      --border: #2a3a54;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #eab308;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --radius: 10px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 16px; font-weight: 600; color: var(--text); }
+    header .badge { background: var(--accent); color: white; font-size: 10px; padding: 2px 8px; border-radius: 20px; font-weight: 600; }
+
+    nav { display: flex; overflow-x: auto; background: var(--surface); border-bottom: 1px solid var(--border); scrollbar-width: none; }
+    nav::-webkit-scrollbar { display: none; }
+    nav button { flex: 0 0 auto; padding: 10px 14px; background: none; border: none; color: var(--muted); font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+    nav button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-content { display: none; padding: 16px; max-width: 600px; margin: 0 auto; }
+    .tab-content.active { display: block; }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+    .card h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+    .filter-btn { padding: 6px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+    .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .filter-sel { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 12px; }
+    .recon-list { display: flex; flex-direction: column; gap: 6px; }
+    .recon-row { border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+    .positive { color: var(--green) !important; }
+    .negative { color: var(--red) !important; }
+    .warning { color: var(--yellow) !important; }
+    .card .value { font-size: 28px; font-weight: 700; }
+    .card .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .kpi-grid .card .value { font-size: 22px; }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .warning { color: var(--yellow); }
+
+    .vat-deadline { background: var(--surface2); border: 1px solid var(--yellow); border-radius: var(--radius); padding: 12px; margin-bottom: 12px; text-align: center; }
+    .vat-deadline .days { font-size: 32px; font-weight: 700; color: var(--yellow); }
+    .vat-deadline .label { font-size: 12px; color: var(--muted); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 6px; color: var(--muted); font-size: 10px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+    td { padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    tr:last-child td { border-bottom: none; }
+    .amount { text-align: right; font-variant-numeric: tabular-nums; }
+    .status-paid { color: var(--green); }
+    .status-pending { color: var(--yellow); }
+
+    .progress-bar { height: 6px; background: var(--border); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.5s; }
+
+    .category-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+    .cat-restaurant { background: #f97316; }
+    .cat-software { background: #3b82f6; }
+    .cat-travel { background: #22c55e; }
+    .cat-office { background: #a855f7; }
+    .cat-professional_services { background: #eab308; }
+    .cat-other { background: var(--muted); }
+
+    .link-btn { display: inline-block; background: var(--surface2); border: 1px solid var(--border); color: var(--accent); padding: 8px 14px; border-radius: var(--radius); font-size: 13px; text-decoration: none; margin: 4px 4px 4px 0; }
+    .link-btn:hover { background: var(--border); }
+
+    .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+    .chart-wrap h3 { font-size: 12px; color: var(--muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+    .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 13px; }
+    .error-msg { background: var(--surface); border: 1px solid var(--red); border-radius: var(--radius); padding: 12px; color: var(--red); font-size: 13px; }
+
+    .pending-revolut { background: var(--surface2); border: 1px dashed var(--border); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+
+    @media (min-width: 700px) {
+      .tab-content { max-width: 800px; }
+      .kpi-grid { grid-template-columns: repeat(4, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Agila Financial</h1>
+  <span class="badge">Q1 2026</span>
+</header>
+
+<nav id="nav">
+  <button class="active" data-tab="overview">Overview</button>
+  <button data-tab="revenue">Revenue</button>
+  <button data-tab="expenses">Expenses</button>
+  <button data-tab="vat">VAT</button>
+  <button data-tab="bank">Bank</button>
+  <button data-tab="documents">Documents</button>
+</nav>
+
+<div id="content">
+  <!-- Overview -->
+  <div class="tab-content active" id="tab-overview">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <!-- Revenue -->
+  <div class="tab-content" id="tab-revenue">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <!-- Expenses -->
+  <div class="tab-content" id="tab-expenses">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <!-- VAT -->
+  <div class="tab-content" id="tab-vat">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <!-- Bank -->
+  <div class="tab-content" id="tab-bank">
+    <div class="loading">Loading...</div>
+  </div>
+
+  <!-- Documents -->
+  <div class="tab-content" id="tab-documents">
+    <div class="loading">Loading...</div>
+  </div>
+</div>
+
+<script>
+const API = "";
+const fmt = (n) => new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" }).format(n);
+
+let summaryCache = null;
+let revenueCache = null;
+let expensesCache = null;
+let vatCache = null;
+
+// Tab navigation
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+    btn.classList.add("active");
+    const tab = document.getElementById("tab-" + btn.dataset.tab);
+    tab.classList.add("active");
+    tab.style.display = "block";
+    loadTab(btn.dataset.tab);
+  });
+});
+
+async function loadTab(tab) {
+  if (tab === "overview" && !summaryCache) {
+    await loadOverview();
+  } else if (tab === "revenue" && !revenueCache) {
+    await loadRevenue();
+  } else if (tab === "expenses" && !expensesCache) {
+    await loadExpenses();
+  } else if (tab === "vat" && !vatCache) {
+    await loadVAT();
+  } else if (tab === "bank") {
+    loadBank();
+  } else if (tab === "documents") {
+    loadDocuments();
+  }
+}
+
+async function loadOverview() {
+  try {
+    const [summ, rev, exp] = await Promise.all([
+      fetch(API + "/api/summary").then(r => r.json()),
+      fetch(API + "/api/revenue").then(r => r.json()),
+      fetch(API + "/api/expenses").then(r => r.json()),
+    ]);
+    summaryCache = summ; revenueCache = rev; expensesCache = exp;
+
+    const pct = summ.current_month_target > 0
+      ? Math.min(100, Math.round((summ.current_month_revenue / summ.current_month_target) * 100)) : 0;
+    const profitColor = summ.net_profit_estimate >= 0 ? "positive" : "negative";
+
+    document.getElementById("tab-overview").innerHTML = `
+      <div class="card">
+        <h3>April 2026 Revenue</h3>
+        <div class="value">${fmt(summ.current_month_revenue)}</div>
+        <div class="sub">Target: ${fmt(summ.current_month_target)} (${pct}% achieved)</div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="kpi-grid">
+        <div class="card">
+          <h3>Q1 Revenue</h3>
+          <div class="value positive">${fmt(summ.q1_2026_revenue)}</div>
+        </div>
+        <div class="card">
+          <h3>Q1 Expenses</h3>
+          <div class="value">${fmt(summ.q1_2026_expenses)}</div>
+        </div>
+        <div class="card">
+          <h3>Net Profit Est.</h3>
+          <div class="value ${profitColor}">${fmt(summ.net_profit_estimate)}</div>
+        </div>
+        <div class="card">
+          <h3>VAT Due</h3>
+          <div class="value negative">${fmt(summ.net_vat_due)}</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Outstanding Invoices</h3>
+        <div class="value ${summ.invoiced_not_received > 0 ? 'warning' : 'positive'}">${fmt(summ.invoiced_not_received)}</div>
+        <div class="sub">Invoiced but not yet received</div>
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById("tab-overview").innerHTML = `<div class="error-msg">Failed to load: ${e.message}</div>`;
+  }
+}
+
+async function loadRevenue() {
+  try {
+    const data = await (await fetch(API + "/api/revenue")).json();
+    revenueCache = data;
+    const months = Object.keys(data.monthly_totals).sort();
+    const values = months.map(m => data.monthly_totals[m]);
+
+    const outstandingRows = data.outstanding.length
+      ? data.outstanding.map(inv => `
+        <tr>
+          <td>${inv.name}</td>
+          <td>${inv.date}</td>
+          <td class="amount">${fmt(inv.amount_gross)}</td>
+          <td class="status-${inv.status}">${inv.status}</td>
+        </tr>`).join("")
+      : "<tr><td colspan='4' style='color:var(--muted)'>All invoices paid</td></tr>";
+
+    document.getElementById("tab-revenue").innerHTML = `
+      <div class="chart-wrap">
+        <h3>Monthly Revenue</h3>
+        <canvas id="revChart" height="160"></canvas>
+      </div>
+      <div class="card">
+        <h3>Invoices</h3>
+        <table>
+          <thead><tr><th>Invoice</th><th>Date</th><th class="amount">Amount</th><th>Status</th></tr></thead>
+          <tbody>
+            ${data.invoices.map(inv => `
+              <tr>
+                <td>${inv.name}</td>
+                <td>${inv.date}</td>
+                <td class="amount">${fmt(inv.amount_gross)}</td>
+                <td class="status-${inv.status}">${inv.status}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Outstanding</h3>
+        <table>
+          <thead><tr><th>Invoice</th><th>Date</th><th class="amount">Amount</th><th>Status</th></tr></thead>
+          <tbody>${outstandingRows}</tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>By Client</h3>
+        ${Object.entries(data.by_client).map(([client, total]) => `
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+            <span>${client}</span><span class="amount positive">${fmt(total)}</span>
+          </div>`).join("")}
+      </div>
+    `;
+
+    new Chart(document.getElementById("revChart"), {
+      type: "bar",
+      data: {
+        labels: months.map(m => m.slice(5) + "/" + m.slice(2,4)),
+        datasets: [{ label: "Revenue", data: values, backgroundColor: "#3b82f6", borderRadius: 4 }]
+      },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: "#94a3b8", callback: v => "€" + v.toLocaleString() }, grid: { color: "#232f47" } }, x: { ticks: { color: "#94a3b8" }, grid: { display: false } } } }
+    });
+  } catch(e) {
+    document.getElementById("tab-revenue").innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+async function loadExpenses() {
+  try {
+    const data = await (await fetch(API + "/api/expenses")).json();
+    expensesCache = data;
+    const cats = Object.keys(data.by_category);
+    const catColors = { restaurant: "#f97316", software: "#3b82f6", travel: "#22c55e", office: "#a855f7", professional_services: "#eab308", other: "#94a3b8" };
+
+    const monthly = data.monthly_totals;
+    const months = Object.keys(monthly).sort();
+    const expValues = months.map(m => monthly[m]);
+
+    document.getElementById("tab-expenses").innerHTML = `
+      <div class="chart-wrap">
+        <h3>Monthly Expenses</h3>
+        <canvas id="expChart" height="160"></canvas>
+      </div>
+      <div class="chart-wrap">
+        <h3>By Category</h3>
+        <canvas id="catChart" height="200"></canvas>
+      </div>
+      <div class="kpi-grid">
+        <div class="card">
+          <h3>VAT Recoverable</h3>
+          <div class="value positive">${fmt(data.vat_recoverable_total)}</div>
+        </div>
+        <div class="card">
+          <h3>VAT Non-Recoverable</h3>
+          <div class="value">${fmt(data.vat_non_recoverable_total)}</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Recent Expenses</h3>
+        <table>
+          <thead><tr><th>Date</th><th>Vendor</th><th>Category</th><th class="amount">Amount</th></tr></thead>
+          <tbody>
+            ${data.expenses.slice(0, 20).map(e => `
+              <tr>
+                <td>${e.date}</td>
+                <td>${e.vendor || "-"}</td>
+                <td><span class="category-dot cat-${e.category}"></span>${e.category}</td>
+                <td class="amount">${fmt(e.amount)}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    new Chart(document.getElementById("expChart"), {
+      type: "bar",
+      data: { labels: months.map(m => m.slice(5) + "/" + m.slice(2,4)), datasets: [{ label: "Expenses", data: expValues, backgroundColor: "#ef4444", borderRadius: 4 }] },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: "#94a3b8", callback: v => "€" + v.toLocaleString() }, grid: { color: "#232f47" } }, x: { ticks: { color: "#94a3b8" }, grid: { display: false } } } }
+    });
+
+    new Chart(document.getElementById("catChart"), {
+      type: "doughnut",
+      data: {
+        labels: cats,
+        datasets: [{ data: cats.map(c => data.by_category[c]), backgroundColor: cats.map(c => catColors[c] || "#94a3b8") }]
+      },
+      options: { responsive: true, plugins: { legend: { position: "bottom", labels: { color: "#94a3b8", padding: 12, font: { size: 11 } } } } }
+    });
+  } catch(e) {
+    document.getElementById("tab-expenses").innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+async function loadVAT() {
+  try {
+    const data = await (await fetch(API + "/api/vat")).json();
+    vatCache = data;
+    const cq = data.current_quarter;
+    const daysColor = data.days_until_deadline < 30 ? "negative" : data.days_until_deadline < 60 ? "warning" : "positive";
+
+    document.getElementById("tab-vat").innerHTML = `
+      <div class="vat-deadline">
+        <div class="days">${data.days_until_deadline}</div>
+        <div class="label">days until Q1 2026 VAT deadline</div>
+        <div style="margin-top:6px;font-size:12px;color:var(--muted)">Due: 15 June 2026</div>
+      </div>
+      <div class="kpi-grid">
+        <div class="card">
+          <h3>Output VAT</h3>
+          <div class="value">${fmt(cq.output_vat)}</div>
+          <div class="sub">Collected from clients</div>
+        </div>
+        <div class="card">
+          <h3>Input VAT</h3>
+          <div class="value positive">${fmt(cq.input_vat)}</div>
+          <div class="sub">Recoverable</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Net VAT Due (Q1 2026)</h3>
+        <div class="value ${daysColor}">${fmt(cq.net_vat)}</div>
+        <div class="sub">Payable to Administration des Contributions</div>
+      </div>
+      <div class="chart-wrap">
+        <h3>Q1 2026 VAT Breakdown</h3>
+        <canvas id="vatChart" height="180"></canvas>
+      </div>
+    `;
+
+    new Chart(document.getElementById("vatChart"), {
+      type: "bar",
+      data: {
+        labels: ["Output VAT", "Input VAT", "Net Due"],
+        datasets: [{
+          data: [cq.output_vat, cq.input_vat, cq.net_vat],
+          backgroundColor: ["#3b82f6", "#22c55e", cq.net_vat > 0 ? "#ef4444" : "#22c55e"],
+          borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { ticks: { color: "#94a3b8", callback: v => "€" + v.toLocaleString() }, grid: { color: "#232f47" } },
+          x: { ticks: { color: "#94a3b8" }, grid: { display: false } }
+        }
+      }
+    });
+  } catch(e) {
+    document.getElementById("tab-vat").innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+// State
+let reconCache = null;
+let reconFilter = { status: "all", bank: "all", period: "all" };
+
+function statusColor(s) {
+  if (!s) return "var(--muted)";
+  if (s.includes("MATCHED") && !s.includes("MISSING")) return "var(--green)";
+  if (s.includes("MISSING - HIGH")) return "var(--red)";
+  if (s.includes("MISSING - MEDIUM")) return "#f97316";
+  if (s.includes("MISSING - LOW")) return "var(--yellow)";
+  if (s.includes("PENDING")) return "var(--yellow)";
+  if (s.includes("TESLA")) return "#f97316";
+  if (s.includes("NO RECEIPT")) return "var(--accent)";
+  return "var(--muted)";
+}
+
+function statusBg(s) {
+  if (!s) return "rgba(148,163,184,0.15)";
+  if (s.includes("MATCHED") && !s.includes("MISSING")) return "rgba(34,197,94,0.15)";
+  if (s.includes("MISSING - HIGH")) return "rgba(239,68,68,0.15)";
+  if (s.includes("MISSING - MEDIUM")) return "rgba(249,115,22,0.15)";
+  if (s.includes("MISSING - LOW")) return "rgba(234,179,8,0.15)";
+  if (s.includes("PENDING")) return "rgba(234,179,8,0.15)";
+  if (s.includes("TESLA")) return "rgba(249,115,22,0.15)";
+  if (s.includes("NO RECEIPT")) return "rgba(59,130,246,0.15)";
+  return "rgba(148,163,184,0.15)";
+}
+
+async function loadBank() {
+  if (reconCache) { renderReconciliation(reconCache); return; }
+  try {
+    const [recon, vat] = await Promise.all([
+      fetch("/api/reconciliation").then(r => r.json()),
+      fetch("/api/vat").then(r => r.json()),
+    ]);
+    reconCache = recon;
+    reconCache.vat = vat;
+    renderReconciliation(reconCache);
+  } catch(e) {
+    document.getElementById("tab-bank").innerHTML = '<div class="error-msg">Failed: ' + e.message + '</div>';
+  }
+}
+
+function renderReconciliation(data) {
+  const s = data.summary;
+  const days = data.vat ? data.vat.days_until_deadline : 0;
+  const daysColor = days < 30 ? "negative" : days < 60 ? "warning" : "positive";
+  const matchPct = s.matched_pct || 0;
+  const matchColor = matchPct >= 70 ? "positive" : matchPct >= 50 ? "warning" : "negative";
+  const unmatched = (s.missing || 0) + (s.pending || 0) + (s.tesla || 0);
+  const txns = data.transactions || [];
+  const byStatus = {};
+  txns.forEach(t => { const k = t.match_status || '?'; byStatus[k] = (byStatus[k] || 0) + 1; });
+  const missingHigh = byStatus["MISSING - HIGH"] || 0;
+  const missingMed = byStatus["MISSING - MEDIUM"] || 0;
+
+  document.getElementById("tab-bank").innerHTML = `
+    <div class="kpi-grid">
+      <div class="card">
+        <h3>Match Rate</h3>
+        <div class="value ${matchColor}">${matchPct.toFixed(0)}%</div>
+        <div class="sub">${s.matched || 0} / ${s.total || 0} transactions</div>
+      </div>
+      <div class="card">
+        <h3>Unmatched</h3>
+        <div class="value ${unmatched > 0 ? 'negative' : 'positive'}">${unmatched}</div>
+        <div class="sub">Needs review</div>
+      </div>
+      <div class="card">
+        <h3>Missing Priority</h3>
+        <div class="value ${missingHigh > 0 ? 'negative' : 'positive'}">${missingHigh} high, ${missingMed} med</div>
+        <div class="sub">Action required</div>
+      </div>
+      <div class="card">
+        <h3>VAT Deadline</h3>
+        <div class="value ${daysColor}">${days}d</div>
+        <div class="sub">Q1 15 June 2026</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:6px;margin-bottom:8px;overflow-x:auto;padding-bottom:4px;">
+      <button class="filter-btn ${reconFilter.status==='all'?'active':''}" onclick="setFilter('status','all',this)">All</button>
+      <button class="filter-btn ${reconFilter.status==='matched'?'active':''}" onclick="setFilter('status','matched',this)">Matched</button>
+      <button class="filter-btn ${reconFilter.status==='missing'?'active':''}" onclick="setFilter('status','missing',this)">Missing</button>
+      <button class="filter-btn ${reconFilter.status==='pending'?'active':''}" onclick="setFilter('status','pending',this)">Pending</button>
+      <button class="filter-btn ${reconFilter.status==='tesla'?'active':''}" onclick="setFilter('status','tesla',this)">Tesla</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:12px;overflow-x:auto;padding-bottom:4px;">
+      <select class="filter-sel" onchange="setFilter('bank',this.value)">
+        <option value="all">All Banks</option>
+        <option value="Everest">Everest</option>
+        <option value="Revolut">Revolut</option>
+      </select>
+      <select class="filter-sel" onchange="setFilter('period',this.value)">
+        <option value="all">All Periods</option>
+        <option value="Q4 2025">Q4 2025</option>
+        <option value="Q1 2026">Q1 2026</option>
+      </select>
+    </div>
+
+    <div class="recon-list" id="recon-list"></div>
+  `;
+  renderTransactions(data.transactions || []);
+}
+
+function setFilter(type, value) {
+  if (type === 'status') reconFilter.status = value;
+  if (type === 'bank') reconFilter.bank = value;
+  if (type === 'period') reconFilter.period = value;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.filter-btn').forEach(b => {
+    const txt = b.textContent.trim().toLowerCase();
+    if ((type === 'status' && (
+      (value === 'all' && txt === 'all') ||
+      (value === 'matched' && txt === 'matched') ||
+      (value === 'missing' && txt === 'missing') ||
+      (value === 'pending' && txt === 'pending') ||
+      (value === 'tesla' && txt === 'tesla')
+    ))) b.classList.add('active');
+  });
+  renderTransactions(reconCache ? reconCache.transactions : []);
+}
+
+function filterTxn(t) {
+  if (reconFilter.status === 'matched' && !t.match_status.includes('MATCHED')) return false;
+  if (reconFilter.status === 'missing' && !t.match_status.includes('MISSING')) return false;
+  if (reconFilter.status === 'pending' && !t.match_status.includes('PENDING')) return false;
+  if (reconFilter.status === 'tesla' && !t.match_status.includes('TESLA')) return false;
+  if (reconFilter.bank !== 'all' && t.bank !== reconFilter.bank) return false;
+  if (reconFilter.period !== 'all' && t.period !== reconFilter.period) return false;
+  return true;
+}
+
+function renderTransactions(txns) {
+  const filtered = txns.filter(filterTxn);
+  const list = document.getElementById('recon-list');
+  if (!filtered.length) {
+    list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;font-size:13px;">No transactions match filters</div>';
+    return;
+  }
+
+  list.innerHTML = filtered.map((t, i) => {
+    const amt = t.amount || 0;
+    const amtStr = (amt < 0 ? '-' : '') + '\u20ac' + Math.abs(amt).toFixed(2);
+    const dot = statusColor(t.match_status);
+    const bg = statusBg(t.match_status);
+    const badge = t.match_status ? t.match_status.trim() : '';
+    const receipt = t.receipt_file && t.receipt_file !== '\u2014' ? t.receipt_file : null;
+    const safeNotes = (t.notes || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<div class="recon-row" style="background:'+bg+';border-left:3px solid '+dot+'" onclick="toggleRecon(this, '+i+')">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;flex-wrap:wrap">' +
+            '<span style="width:7px;height:7px;border-radius:50%;background:'+dot+';flex-shrink:0"></span>' +
+            '<span style="font-size:11px;color:var(--muted);white-space:nowrap">'+ (t.date || '')+'</span>' +
+            '<span style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">'+ (t.description || '')+'</span>' +
+          '</div>' +
+          '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">' +
+            '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:'+bg+';color:'+dot+';border:1px solid '+dot+'40;font-family:monospace">'+badge+'</span>' +
+            (receipt ? '<span style="font-size:10px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+receipt+'</span>' : '') +
+          '</div>' +
+        '</div>' +
+        '<span style="font-size:13px;font-weight:600;color:'+(amt < 0 ? 'var(--red)' : 'var(--green)')+';white-space:nowrap;padding-top:1px">'+amtStr+'</span>' +
+      '</div>' +
+      '<div class="recon-detail" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06)">' +
+        (safeNotes ? '<div style="font-size:12px;color:var(--muted);line-height:1.5">'+safeNotes+'</div>' : '<div style="font-size:12px;color:var(--muted)">No notes</div>') +
+        '<div style="margin-top:6px;font-size:11px;color:var(--muted)">Bank: '+(t.bank||'?')+' &nbsp;|&nbsp; Period: '+(t.period||'?')+'</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function toggleRecon(el) {
+  const detail = el.querySelector('.recon-detail');
+  if (!detail) return;
+  detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+}
+
+async function loadDocuments() {
+  try {
+    const data = await (await fetch(API + "/api/documents")).json();
+    document.getElementById("tab-documents").innerHTML = `
+      <div class="card">
+        <h3>Quick Links</h3>
+        <a class="link-btn" href="https://1drv.ms/f/s!AgilaAccounting" target="_blank">OneDrive Accounting</a>
+        <a class="link-btn" href="https://agila-consulting-sarl.odoo.com" target="_blank">Odoo</a>
+      </div>
+      <div class="card">
+        <h3>Receipts This Month</h3>
+        <div class="value">${data.receipt_count_month}</div>
+        <div class="sub">Captured via Telegram bot</div>
+      </div>
+      <div class="card">
+        <h3>Recent Receipts</h3>
+        ${data.receipts.length === 0
+          ? "<div style='color:var(--muted);font-size:13px;'>No receipts yet. Send receipts via Telegram bot.</div>"
+          : `<table>
+              <thead><tr><th>Date</th><th>Vendor</th><th>Category</th><th class="amount">Amount</th></tr></thead>
+              <tbody>
+                ${data.receipts.map(r => `
+                  <tr>
+                    <td>${r.date_str || r.created_at}</td>
+                    <td>${r.vendor || "-"}</td>
+                    <td>${r.category || "-"}</td>
+                    <td class="amount">${r.amount ? fmt(r.amount) : "-"}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>`}
+      </div>
+    `;
+  } catch(e) {
+    document.getElementById("tab-documents").innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+// Auto-load overview on start
+loadOverview();
+</script>
+</body>
+</html>
