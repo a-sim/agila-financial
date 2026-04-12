@@ -1,0 +1,16 @@
+[Unit]
+Description=Agila Financial Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=asimo
+WorkingDirectory=/home/asimo/agila-financial-dashboard
+ExecStart=/usr/bin/python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8081
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/agila-dashboard.log
+StandardError=append:/tmp/agila-dashboard.log
+
+[Install]
+WantedBy=multi-user.target
