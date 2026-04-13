@@ -229,28 +229,216 @@ async function loadRevenue() {
 }
 
 async function loadExpenses() {
-  var exp = await fetch("/api/expenses").then(function(r){return r.json()});
+  var vatRes = await Promise.all([
+    fetch("/api/expenses").then(function(r){return r.json()}),
+    fetch("/api/vat").then(function(r){return r.json()}),
+  ]);
+  var exp = vatRes[0];
+  var vat = vatRes[1];
   var el = document.getElementById("tab-expenses");
+
   var cats = exp.categories||[];
-  var rows = cats.map(function(c) {
-    return '<tr><td>' + h(c.category||'?') + '</td><td class="amount">EUR ' + eur(c.total) + '</td><td class="amount" style="color:var(--green)">EUR ' + eur(c.vat_recoverable) + '</td><td class="amount" style="color:var(--red)">EUR ' + eur(c.non_deductible) + '</td></tr>';
+  var expenses = exp.expenses||[];
+
+  // Compute summary KPIs
+  var now = new Date();
+  var curYear = now.getFullYear();
+  var curMonth = now.getMonth()+1;
+  var curQ = "Q" + Math.ceil(curMonth/3);
+
+  // Filter to current quarter for period totals
+  var qCatTotals = {};
+  var qTotal = 0, qRecoverable = 0, qNonRecoverable = 0;
+  expenses.forEach(function(e) {
+    var d = new Date(e.date);
+    if (d.getFullYear() == curYear) {
+      var eq = "Q" + Math.ceil((d.getMonth()+1)/3);
+      if (eq == curQ) {
+        var net = parseFloat(e.amount)||0;
+        var vatAmt = parseFloat(e.amount_vat)||0;
+        var rec = parseFloat(e.vat_recoverable)||0;
+        qTotal += net + vatAmt;
+        qRecoverable += rec;
+        qNonRecoverable += (vatAmt - rec);
+      }
+    }
+  });
+
+  // Find top category (by total net+ VAT in current quarter)
+  var catTotalsQ = {};
+  expenses.forEach(function(e) {
+    var d = new Date(e.date);
+    if (d.getFullYear() == curYear) {
+      var eq = "Q" + Math.ceil((d.getMonth()+1)/3);
+      if (eq == curQ) {
+        var cat = e.category||'other';
+        catTotalsQ[cat] = (catTotalsQ[cat]||0) + (parseFloat(e.amount)||0) + (parseFloat(e.amount_vat)||0);
+      }
+    }
+  });
+  var topCat = Object.entries(catTotalsQ).sort(function(a,b){return b[1]-a[1]})[0];
+
+  // Build table rows with VAT recovery detail
+  var expRows = expenses.slice(0, 50).map(function(e) {
+    var net = parseFloat(e.amount)||0;
+    var vatAmt = parseFloat(e.amount_vat)||0;
+    var rec = parseFloat(e.vat_recoverable)||0;
+    var nonRec = Math.max(0, vatAmt - rec);
+    var status = rec > 0 && nonRec == 0 ? 'var(--green)' : rec > 0 && nonRec > 0 ? 'var(--yellow)' : 'var(--red)';
+    var statusLabel = rec > 0 && nonRec == 0 ? '✓ Recoverable' : rec > 0 && nonRec > 0 ? '◐ Partial' : '✗ Not recoverable';
+    var srcBadge = e.source ? '<span class="bank-chip">'+h(e.source)+'</span>' : '';
+    return '<tr class="exp-row" onclick="toggleExpDetail(this)" data-exp="'+h(JSON.stringify(e)).replace(/"/g,'&quot;')+'">' +
+      '<td>' + h(e.date||'') + '</td>' +
+      '<td>' + h(e.vendor||e.category||'') + '</td>' +
+      '<td>' + h(e.category||'') + '</td>' +
+      '<td class="amount">EUR ' + eur(net) + '</td>' +
+      '<td class="amount">EUR ' + eur(vatAmt) + '</td>' +
+      '<td class="amount" style="color:'+status+'">' + statusLabel + '</td>' +
+      '<td class="amount">' + srcBadge + '</td>' +
+      '</tr>';
   }).join("");
 
-  setHTML(el, '<div class="chart-wrap"><canvas id="expChart"></canvas></div>' +
-    '<div class="kpi-grid">' +
-      '<div class="card"><h3>VAT Recoverable</h3><div class="value positive">EUR ' + eur(exp.vat_recoverable_total) + '</div></div>' +
-      '<div class="card"><h3>Non-Deductible VAT</h3><div class="value negative">EUR ' + eur(exp.vat_non_recoverable_total) + '</div></div>' +
-    '</div>' +
-    '<div class="section-title">By Category (with VAT Recovery)</div>' +
-    '<table class="cat-table"><thead><tr><th>Category</th><th class="amount">Total</th><th class="amount">VAT Deductible</th><th class="amount">Non-Deductible</th></tr></thead><tbody>' + rows + '</tbody></table>');
+  // Category summary rows
+  var catRows = cats.map(function(c) {
+    var recColor = (c.vat_recoverable||0)>0 ? "var(--green)" : "var(--red)";
+    var nonRecColor = (c.non_deductible||0)>0 ? "var(--red)" : "var(--muted)";
+    return '<tr><td>' + h(c.category||'?') + '</td><td class="amount">EUR ' + eur(c.total) + '</td>' +
+      '<td class="amount">' + ((c.vat_rate||0)*100).toFixed(0) + '%</td>' +
+      '<td class="amount" style="color:' + recColor + '">EUR ' + eur(c.vat_recoverable||0) + '</td>' +
+      '<td class="amount" style="color:' + nonRecColor + '">EUR ' + eur(c.non_deductible||0) + '</td></tr>';
+  }).join("");
 
-  if (cats.length) {
-    new Chart(document.getElementById("expChart"), {
-      type:"doughnut",
-      data:{labels:cats.map(function(c){return c.category}),datasets:[{data:cats.map(function(c){return c.total}),backgroundColor:["#3b82f6","#22c55e","#f59e0b","#f97316","#8b5cf6","#06b6d4","#ec4899","#14b8a6","#a855f7"]}]},
-      options:{responsive:true,plugins:{legend:{position:"bottom",labels:{color:"#6b7280",padding:12}}}}
-    });
+  var qMonths = 1; // partial quarter
+  setHTML(el,
+    '<div class="kpi-grid" style="margin-bottom:12px">' +
+      '<div class="card"><h3>Total Expenses</h3><div class="value">EUR ' + eur(qTotal) + '</div><div class="sub">' + h(curQ) + ' ' + curYear + '</div></div>' +
+      '<div class="card"><h3>Avg per Month</h3><div class="value">EUR ' + eur(qTotal/qMonths) + '</div><div class="sub">Q avg</div></div>' +
+      '<div class="card"><h3>Top Category</h3><div class="value" style="font-size:18px">' + h(topCat?topCat[0]:'—') + '</div><div class="sub">EUR ' + eur(topCat?topCat[1]:0) + '</div></div>' +
+      '<div class="card"><h3>VAT Recoverable</h3><div class="value positive">EUR ' + eur(vat.current_quarter?vat.current_quarter.input_vat:0) + '</div><div class="sub">EU refund pending: EUR ' + eur(vat.eu_refund_pending_total||0) + '</div></div>' +
+    '</div>' +
+
+    '<div class="filter-bar">' +
+      '<select class="filter-sel" id="expViewSel" onchange="setExpView(this.value)">' +
+        '<option value="category">By Category</option>' +
+        '<option value="chart">Bar Chart</option>' +
+        '<option value="table">Table</option>' +
+      '</select>' +
+      '<select class="filter-sel" id="expCatFilt" onchange="renderExpChart()">' +
+        '<option value="">All Categories</option>' +
+        cats.map(function(c){return '<option value="'+h(c.category||'')+'">'+h(c.category||'')+'</option>'}).join('') +
+      '</select>' +
+    '</div>' +
+
+    '<div class="chart-wrap" id="expChartWrap"><canvas id="expChart"></canvas></div>' +
+    '<div id="expTableWrap" style="display:none">' +
+      '<div style="margin-bottom:8px">' +
+        '<input id="expSearch" onkeyup="filterExpTable()" placeholder="Search vendor, category..." style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">' +
+      '</div>' +
+      '<div style="overflow-x:auto">' +
+      '<table class="cat-table" id="expTable"><thead><tr>' +
+        '<th onclick="sortExpTable(0)">Date ↕</th>' +
+        '<th onclick="sortExpTable(1)">Vendor ↕</th>' +
+        '<th onclick="sortExpTable(2)">Category ↕</th>' +
+        '<th onclick="sortExpTable(3)" class="amount">Net ↕</th>' +
+        '<th onclick="sortExpTable(4)" class="amount">VAT ↕</th>' +
+        '<th onclick="sortExpTable(5)" class="amount">Recoverable ↕</th>' +
+        '<th>Source</th>' +
+      '</tr></thead><tbody id="expTableBody">' + expRows + '</tbody></table></div>' +
+    '</div>' +
+
+    '<div class="section-title">By Category (with VAT Recovery)</div>' +
+    '<table class="cat-table"><thead><tr><th>Category</th><th class="amount">Total</th><th class="amount">VAT Rate</th><th class="amount">VAT Deductible</th><th class="amount">Non-Deductible</th></tr></thead><tbody>' + catRows + '</tbody></table>' +
+
+    '<div style="font-size:11px;color:var(--muted);margin-top:12px;padding:10px;background:var(--surface);border-radius:8px">' +
+      '<strong>Note:</strong> Restaurant/meals = 14–17% VAT, 0% recovery (entertainment). Hotel = 3% super-reduced, fully recoverable. ' +
+      'Car/EV in Luxembourg = 17%, fully recoverable. Cross-border EU = EU refund directive (pending). ' +
+      'US/foreign subscriptions = reverse charge (0% VAT).' +
+    '</div>');
+
+  // Build bar chart data: by category (net + VAT stacked)
+  window._expData = {cats: cats, expenses: expenses};
+  renderExpChart();
+}
+
+function setExpView(view) {
+  var chartWrap = document.getElementById("expChartWrap");
+  var tableWrap = document.getElementById("expTableWrap");
+  if (view === "table") {
+    chartWrap.style.display = "none";
+    tableWrap.style.display = "block";
+  } else {
+    chartWrap.style.display = "block";
+    tableWrap.style.display = "none";
+    if (view === "chart") renderExpChart();
   }
+}
+
+function renderExpChart() {
+  var d = window._expData;
+  if (!d) return;
+  var cats = d.cats;
+  var catFilter = document.getElementById("expCatFilt") ? document.getElementById("expCatFilt").value : "";
+  var filtered = catFilter ? cats.filter(function(c){return c.category === catFilter}) : cats;
+
+  var canvas = document.getElementById("expChart");
+  if (window._expChart && window._expChart.destroy) window._expChart.destroy();
+  window._expChart = new Chart(canvas, {
+    type:"bar",
+    data:{
+      labels: filtered.map(function(c){return c.category}),
+      datasets:[
+        {
+          label:"Net Amount",
+          data: filtered.map(function(c){return c.total}),
+          backgroundColor: "#3b82f6",
+        },
+        {
+          label:"VAT",
+          data: filtered.map(function(c){return c.vat_charged||Math.round(c.total*(c.vat_rate||0.17))}),
+          backgroundColor: "rgba(59,130,246,0.4)",
+        }
+      ]
+    },
+    options:{
+      responsive:true,
+      plugins:{legend:{labels:{color:"#6b7280"}}},
+      scales:{
+        x:{stacked:true, ticks:{color:"#6b7280", font:{size:11}}},
+        y:{stacked:true, beginAtZero:true, ticks:{color:"#6b7280", callback:function(v){return "€"+v.toLocaleString()}}}}
+    }
+  });
+}
+
+var _expSortCol = 0, _expSortAsc = false;
+function sortExpTable(col) {
+  _expSortAsc = _expSortCol === col ? !_expSortAsc : true;
+  _expSortCol = col;
+  renderSortedExpTable();
+}
+function renderSortedExpTable() {
+  var tbody = document.getElementById("expTableBody");
+  if (!tbody) return;
+  var rows = Array.from(tbody.querySelectorAll("tr"));
+  rows.sort(function(a,b){
+    var aa = a.cells[_expSortCol].textContent.trim();
+    var bb = b.cells[_expSortCol].textContent.trim();
+    var na = parseFloat(aa.replace(/[^0-9.-]/g,""));
+    var nb = parseFloat(bb.replace(/[^0-9.-]/g,""));
+    if (!isNaN(na) && !isNaN(nb)) return _expSortAsc ? na-nb : nb-na;
+    return _expSortAsc ? aa.localeCompare(bb) : bb.localeCompare(aa);
+  });
+  rows.forEach(function(r){ tbody.appendChild(r); });
+}
+function filterExpTable() {
+  var q = document.getElementById("expSearch").value.toLowerCase();
+  var tbody = document.getElementById("expTableBody");
+  if (!tbody) return;
+  tbody.querySelectorAll("tr").forEach(function(r){
+    r.style.display = r.textContent.toLowerCase().includes(q) ? "" : "none";
+  });
+}
+function toggleExpDetail(el) {
+  // For future expanded detail row
 }
 
 async function loadVAT() {
@@ -260,14 +448,26 @@ async function loadVAT() {
   var isReclaim = (q.net_vat||0) < 0;
   var days = q.days_until_deadline || vat.days_until_deadline || 64;
   var dc = days<30?"negative":days<60?"warning":"positive";
+
   var catRows = (vat.by_category||[]).map(function(c) {
     var recColor = (c.vat_recoverable||0)>0 ? "var(--green)" : "var(--red)";
     var nonRecColor = (c.non_recoverable||0)>0 ? "var(--red)" : "var(--muted)";
-    return '<tr><td>' + h(c.category||'?') + '</td><td class="amount">EUR ' + eur(c.total_amount) + '</td>' +
+    var statusBadge = "";
+    if (c.recovery_status === "not_recoverable") statusBadge = '<span style="font-size:10px;color:var(--red);margin-left:4px">✗ not recoverable</span>';
+    else if (c.recovery_status === "reverse_charge") statusBadge = '<span style="font-size:10px;color:var(--accent);margin-left:4px">⟳ reverse charge</span>';
+    else if (c.recovery_status === "eu_refund_pending") statusBadge = '<span style="font-size:10px;color:var(--yellow);margin-left:4px">⏳ EU refund pending</span>';
+    else if (c.recovery_status === "fully_recoverable") statusBadge = '<span style="font-size:10px;color:var(--green);margin-left:4px">✓ fully recoverable</span>';
+    return '<tr><td>' + h(c.category||'?') + statusBadge + '</td>' +
+      '<td class="amount">EUR ' + eur(c.total_amount) + '</td>' +
       '<td class="amount">' + ((c.vat_rate||0)*100).toFixed(0) + '%</td>' +
       '<td class="amount" style="color:' + recColor + '">EUR ' + eur(c.vat_recoverable||0) + '</td>' +
       '<td class="amount" style="color:' + nonRecColor + '">EUR ' + eur(c.non_recoverable||0) + '</td></tr>';
   }).join("");
+
+  // VAT recovery summary cards
+  var euPending = vat.eu_refund_pending_total || 0;
+  var nonRecTotal = vat.non_recoverable_total || 0;
+  var revCharge = vat.reverse_charge_total || 0;
 
   setHTML(el,
     '<div class="vat-big">' +
@@ -282,13 +482,22 @@ async function loadVAT() {
       '</div>' +
     '</div>' +
     '<div class="kpi-grid">' +
-      '<div class="card"><h3>Output VAT</h3><div class="value">EUR ' + eur(q.output_vat) + '</div><div class="sub">collected (0 for reverse charge)</div></div>' +
-      '<div class="card"><h3>Input VAT</h3><div class="value positive">EUR ' + eur(q.input_vat) + '</div><div class="sub">recoverable</div></div>' +
+      '<div class="card"><h3>Output VAT</h3><div class="value">EUR ' + eur(q.output_vat) + '</div><div class="sub">collected (reverse charge = 0)</div></div>' +
+      '<div class="card"><h3>Input VAT</h3><div class="value positive">EUR ' + eur(q.input_vat) + '</div><div class="sub">immediately deductible in LU</div></div>' +
+      '<div class="card"><h3>EU Refund Pending</h3><div class="value warning">EUR ' + eur(euPending) + '</div><div class="sub">cross-border EU (8th/13th dir.)</div></div>' +
+      '<div class="card"><h3>Non-Recoverable</h3><div class="value negative">EUR ' + eur(nonRecTotal) + '</div><div class="sub">entertainment/meals (LU §56)</div></div>' +
     '</div>' +
     '<div class="section-title">Breakdown by Category</div>' +
     '<table class="cat-table"><thead><tr><th>Category</th><th class="amount">Total Spend</th><th class="amount">VAT Rate</th><th class="amount">VAT Recoverable</th><th class="amount">Non-Recoverable</th></tr></thead><tbody>' + catRows + '</tbody></table>' +
-    '<div style="font-size:11px;color:var(--muted);margin-top:12px;padding:10px;background:var(--surface);border-radius:8px">' +
-      '<strong>Note:</strong> Restaurant/meals = 17% VAT charged but 0% recovery (Luxembourg law). Hotel = 3% super-reduced rate. EU B2B reverse-charge invoices = 0% VAT collected.' +
+    '<div style="font-size:11px;color:var(--muted);margin-top:12px;padding:10px;background:var(--surface);border-radius:8px;line-height:1.8">' +
+      '<strong>LU VAT Rules (MwStG / EU 2006/112/EC):</strong><br>' +
+      '• Restaurant food (14%) &amp; drinks (17%) = 0% recovery – entertainment per §56<br>' +
+      '• Hotel = 3% super-reduced, fully recoverable<br>' +
+      '• Car/EV in Luxembourg = 17%, fully deductible<br>' +
+      '• Car/EV in other EU = 17%, pending recovery via EU 8th/13th directive<br>' +
+      '• US subscriptions (OpenAI, Anthropic, etc.) = reverse charge, 0% VAT collected<br>' +
+      '• Professional services in LU = 17%, fully deductible<br>' +
+      '• Non-EU expenses = not recoverable' +
     '</div>');
 }
 
@@ -337,6 +546,27 @@ function renderRecon() {
   txns.forEach(function(t){var k=t.match_status||"?";byS[k]=(byS[k]||0)+1});
   var mH=byS["MISSING - HIGH"]||0, mM=byS["MISSING - MEDIUM"]||0, mL=byS["MISSING - LOW"]||0;
 
+  // Build dynamic period options from by_period keys + VAT API quarters
+  var periodKeys = Object.keys(d.by_period||{}).sort(function(a,b){
+    var ya=parseInt(a.split(' ')[1]), yb=parseInt(b.split(' ')[1]);
+    var qa=a.split(' ')[0], qb=b.split(' ')[0];
+    if (ya!==yb) return ya-yb;
+    return ['Q1','Q2','Q3','Q4'].indexOf(qa)-['Q1','Q2','Q3','Q4'].indexOf(qb);
+  });
+  var periodOpts = periodKeys.map(function(p){return '<option value="'+h(p)+'">'+h(p)+'</option>'}).join('');
+
+  // Enhance with Q2 2026 from VAT API if not already present
+  (function hydrateQ2(){
+    fetch("/api/vat").then(function(r){return r.json()}).then(function(vatData){
+      var aq = (vatData.available_quarters||[]).map(function(q){return q.quarter+' '+q.year});
+      aq.forEach(function(p){
+        if (periodOpts.indexOf(p)<0) periodOpts += '<option value="'+h(p)+'">'+h(p)+'</option>';
+      });
+      var sel = document.getElementById("periodSel");
+      if (sel) sel.innerHTML = '<option value="all">All Periods</option>' + periodOpts;
+    }).catch(function(){});
+  })();
+
   setHTML("tab-bank",
     '<div class="kpi-grid">' +
       '<div class="card"><h3>Match Rate</h3><div class="value '+mc+'">'+pct.toFixed(0)+'%</div><div class="sub">'+matched+'/'+total+'</div></div>' +
@@ -352,7 +582,7 @@ function renderRecon() {
     '</div>' +
     '<div class="filter-bar">' +
       '<select class="filter-sel" onchange="setF(\'bank\',this.value)"><option value="all">All Banks</option><option value="Everest">Everest</option><option value="Revolut">Revolut</option></select>' +
-      '<select class="filter-sel" onchange="setF(\'period\',this.value)"><option value="all">All Periods</option><option value="Q4 2025">Q4 2025</option><option value="Q1 2026">Q1 2026</option></select>' +
+      '<select class="filter-sel" id="periodSel" onchange="setF(\'period\',this.value)"><option value="all">All Periods</option>'+periodOpts+'</select>' +
     '</div>' +
     '<div id="recon-list"></div>');
   renderTxns(txns);
