@@ -38,7 +38,7 @@ def run_reconciliation(conn=None):
     own_conn = conn is None
     if own_conn:
         conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row
 
     cur = conn.cursor()
 
