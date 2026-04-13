@@ -89,7 +89,7 @@
 
 <header>
   <h1>Agila Financial</h1>
-  <span class="badge">Q1 2026</span>
+  <span class="badge" id="quarterBadge">Q2 2026</span>
 </header>
 
 <nav id="nav">
@@ -141,6 +141,7 @@ let summaryCache = null;
 let revenueCache = null;
 let expensesCache = null;
 let vatCache = null;
+let currentVatQuarter = { quarter: "Q2", year: 2026 };
 
 // Tab navigation
 document.querySelectorAll("nav button").forEach(btn => {
@@ -162,8 +163,8 @@ async function loadTab(tab) {
     await loadRevenue();
   } else if (tab === "expenses" && !expensesCache) {
     await loadExpenses();
-  } else if (tab === "vat" && !vatCache) {
-    await loadVAT();
+  } else if (tab === "vat") {
+    await loadVAT(currentVatQuarter.quarter, currentVatQuarter.year);
   } else if (tab === "bank") {
     loadBank();
   } else if (tab === "documents") {
@@ -352,18 +353,36 @@ async function loadExpenses() {
   }
 }
 
-async function loadVAT() {
+async function loadVAT(quarter, year) {
   try {
-    const data = await (await fetch(API + "/api/vat")).json();
+    const url = API + "/api/vat?quarter=" + encodeURIComponent(quarter) + "&year=" + year;
+    const data = await (await fetch(url)).json();
     vatCache = data;
     const cq = data.current_quarter;
     const daysColor = data.days_until_deadline < 30 ? "negative" : data.days_until_deadline < 60 ? "warning" : "positive";
+    const qLabel = cq.quarter + " " + cq.year;
+    const prevLabel = data.previous_quarter ? data.previous_quarter.quarter + " " + data.previous_quarter.year : null;
+    const prevDiff = data.previous_quarter ? cq.net_vat - data.previous_quarter.net_vat : null;
+
+    // Update header badge
+    document.getElementById("quarterBadge").textContent = qLabel;
+
+    // Build quarter selector
+    const quarterOpts = data.available_quarters.map(q =>
+      `<option value="${q.quarter}/${q.year}" ${q.quarter === quarter && q.year === year ? "selected" : ""}>${q.quarter} ${q.year}</option>`
+    ).join("");
 
     document.getElementById("tab-vat").innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="font-size:13px;color:var(--muted)">Quarter:</div>
+        <select id="vatQuarterSelect" onchange="changeVatQuarter(this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;">
+          ${quarterOpts}
+        </select>
+      </div>
       <div class="vat-deadline">
         <div class="days">${data.days_until_deadline}</div>
-        <div class="label">days until Q1 2026 VAT deadline</div>
-        <div style="margin-top:6px;font-size:12px;color:var(--muted)">Due: 15 June 2026</div>
+        <div class="label">days until ${qLabel} VAT deadline</div>
+        <div style="margin-top:6px;font-size:12px;color:var(--muted)">Due: ${cq.due_date}</div>
       </div>
       <div class="kpi-grid">
         <div class="card">
@@ -378,12 +397,13 @@ async function loadVAT() {
         </div>
       </div>
       <div class="card">
-        <h3>Net VAT Due (Q1 2026)</h3>
+        <h3>Net VAT Due (${qLabel})</h3>
         <div class="value ${daysColor}">${fmt(cq.net_vat)}</div>
+        ${prevLabel ? `<div class="sub" style="color:${prevDiff > 0 ? 'var(--red)' : 'var(--green)'}">${prevDiff > 0 ? '+' : ''}${fmt(prevDiff)} vs ${prevLabel}</div>` : ""}
         <div class="sub">Payable to Administration des Contributions</div>
       </div>
       <div class="chart-wrap">
-        <h3>Q1 2026 VAT Breakdown</h3>
+        <h3>${qLabel} VAT Breakdown</h3>
         <canvas id="vatChart" height="180"></canvas>
       </div>
     `;
@@ -410,6 +430,13 @@ async function loadVAT() {
   } catch(e) {
     document.getElementById("tab-vat").innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
+}
+
+function changeVatQuarter(val) {
+  const [q, y] = val.split("/");
+  currentVatQuarter = { quarter: q, year: parseInt(y) };
+  document.getElementById("quarterBadge").textContent = q + " " + y;
+  loadVAT(q, parseInt(y));
 }
 
 function loadBank() {
