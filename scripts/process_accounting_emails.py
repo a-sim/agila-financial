@@ -467,7 +467,7 @@ def notify_telegram(message: str):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def process_accounting_emails(dry_run: bool = False, limit: int = 50) -> dict:
+def process_accounting_emails(dry_run: bool = False, limit: int = 50, no_move: bool = False) -> dict:
     ensure_columns()
     token = get_access_token()
     emails = list_emails_with_attachments(limit=limit)
@@ -618,15 +618,17 @@ def process_accounting_emails(dry_run: bool = False, limit: int = 50) -> dict:
             })
 
         # Move email to Accounting folder
-        if email_processed and not email_has_error and not dry_run:
+        # SAFETY: only move if no errors AND no-move flag is not set
+        if email_processed and not email_has_error and not dry_run and not no_move:
             if move_email_to_accounting(email_id, token):
                 summary['moved'] += 1
                 print('  Moved to Agila/LU/LU_Int/01_Accounting')
             else:
                 print('  ERROR: failed to move email')
                 summary['errors'] += 1
-        elif email_processed and email_has_error:
-            print('  NOT moving (had processing errors)')
+        elif email_processed and (email_has_error or no_move):
+            reason = 'processing errors' if email_has_error else '--no-move flag'
+            print(f'  NOT moving ({reason})')
 
     return summary
 
@@ -637,6 +639,7 @@ def main():
     parser.add_argument('--dry-run',   action='store_true')
     parser.add_argument('--limit',     type=int, default=50)
     parser.add_argument('--no-notify', action='store_true')
+    parser.add_argument('--no-move', action='store_true', help='Download and upload but do NOT move emails')
     args = parser.parse_args()
 
     print('=' * 60)
@@ -646,7 +649,7 @@ def main():
         print('[DRY RUN]')
     print('=' * 60)
 
-    summary = process_accounting_emails(dry_run=args.dry_run, limit=args.limit)
+    summary = process_accounting_emails(dry_run=args.dry_run, limit=args.limit, no_move=args.no_move)
 
     print(f'\n{'='*60}')
     print(f'Summary: {summary['processed']} processed | {summary['inserted']} inserted | '
