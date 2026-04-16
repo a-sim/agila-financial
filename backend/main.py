@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import init_db, get_connection
-from backend.routers import revenue, expenses, vat, bank, documents, reconciliation
+from backend.routers import revenue, expenses, vat, bank, documents, reconciliation, emails
 
 VAT_RATES = {
     'restaurant': 0.17,
@@ -47,6 +47,7 @@ app.include_router(vat.router)
 app.include_router(bank.router)
 app.include_router(documents.router)
 app.include_router(reconciliation.router)
+app.include_router(emails.router)
 
 
 @app.on_event("startup")
@@ -126,29 +127,17 @@ def get_summary():
             "due_date": d.get("due_date"),
         })
 
-    # Reconciliation health from reconciliation_data
-    cur.execute("SELECT COUNT(*) FROM reconciliation_data")
-    recon_total = cur.fetchone()[0] or 0
-
-    cur.execute("""
-        SELECT COUNT(*) FROM reconciliation_data
-        WHERE match_status IN ('MATCHED', 'MATCHED (IMAGE)', 'NO RECEIPT NEEDED')
-    """)
-    recon_matched = cur.fetchone()[0] or 0
-
-    recon_pct = round((recon_matched / recon_total * 100), 1) if recon_total > 0 else 0
-
-    # Also check bank_transactions reconciliation
+    # Reconciliation health from bank_transactions (authoritative source)
     cur.execute("SELECT COUNT(*) FROM bank_transactions")
     bank_total = cur.fetchone()[0] or 0
-    cur.execute("SELECT COUNT(*) FROM bank_transactions WHERE reconciliation_status IN ('matched', 'reviewed')")
+
+    cur.execute("SELECT COUNT(*) FROM bank_transactions WHERE reconciliation_status IN ('matched', 'reviewed', 'transfer')")
     bank_matched = cur.fetchone()[0] or 0
 
-    # Unmatched count
-    cur.execute("""
-        SELECT COUNT(*) FROM reconciliation_data
-        WHERE match_status LIKE 'MISSING%'
-    """)
+    recon_pct = round((bank_matched / bank_total * 100), 1) if bank_total > 0 else 0
+
+    # Unmatched = bank transactions not matched, reviewed, or transfer
+    cur.execute("SELECT COUNT(*) FROM bank_transactions WHERE reconciliation_status NOT IN ('matched', 'reviewed', 'transfer')")
     unmatched_count = cur.fetchone()[0] or 0
 
     conn.close()
