@@ -25,3 +25,4 @@ data/uploads/
 
 # Logs
 *.log
+__pycache__/

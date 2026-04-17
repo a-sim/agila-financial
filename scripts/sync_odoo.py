@@ -4,6 +4,7 @@ Sync invoices and bank entries from Odoo into agila.db.
 Uses the same JSON-RPC approach as backend/services/odoo_service.py.
 """
 import json
+import os
 import sqlite3
 import sys
 import urllib.request
@@ -14,7 +15,7 @@ DB_PATH = Path(__file__).parent.parent / "agila.db"
 
 ODOO_URL = "https://agila-consulting-sarl.odoo.com/jsonrpc"
 DB = "agila-consulting-sarl"
-API_KEY = "REDACTED_ODOO_API_KEY"
+API_KEY = os.environ.get("ODOO_API_KEY", "")
 UID = 2
 
 
