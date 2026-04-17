@@ -5,6 +5,7 @@ Auth: uid=2 (public automation user) + API key as password
 """
 import json
 import logging
+import os
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ LOG = logging.getLogger(__name__)
 
 ODOO_URL = "https://agila-consulting-sarl.odoo.com/jsonrpc"
 DB = "agila-consulting-sarl"
-API_KEY = "REDACTED_ODOO_API_KEY"
+API_KEY = os.environ.get("ODOO_API_KEY", "")
 UID = 2  # public automation user — works with API key as password
 
 

@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import msal
 import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -34,15 +35,17 @@ MCPORTER = Path.home() / ".npm-global/bin/mcporter"
 ATTACHMENTS_DIR = Path(__file__).parent.parent.parent / "data" / "attachments"
 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
-ACCOUNT_ID = "REDACTED_ACCOUNT_ID"
+CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "")
+AUTHORITY = "https://login.microsoftonline.com/common"
+SCOPES = ["https://graph.microsoft.com/.default"]
 
 ONEDRIVE_FOLDERS = {
     "Q1": {
-        "folder_id": "REDACTED_FOLDER_ID",
+        "folder_id": os.environ.get("ONEDRIVE_Q1_FOLDER_ID", ""),
         "path": "01_Agila_Lux/01_Accounting/01_Invoices-Expenses_Agila_SHARED/01_Expenses_Incoming/2026/2026_Invoices-Receipts-Statements/2026Q1_Invoices-Receipts",
     },
     "Q2": {
-        "folder_id": "REDACTED_FOLDER_ID2",
+        "folder_id": os.environ.get("ONEDRIVE_Q2_FOLDER_ID", ""),
         "path": "01_Agila_Lux/01_Accounting/01_Invoices-Expenses_Agila_SHARED/01_Expenses_Incoming/2026/2026_Invoices-Receipts-Statements/2026Q2_Invoices-Receipts",
     },
 }
@@ -86,12 +89,29 @@ CATEGORY_KEYWORDS = {
 # ---------------------------------------------------------------------------
 
 def get_access_token() -> str:
-    with open(TOKEN_CACHE) as f:
-        cache = json.load(f)
-    at = cache.get("AccessToken", {})
-    for key, val in at.items():
-        if isinstance(val, dict) and "secret" in val:
-            return val["secret"]
+    """Get a valid Graph API access token, auto-refreshing via MSAL."""
+    msal_cache = msal.SerializableTokenCache()
+    if TOKEN_CACHE.exists():
+        msal_cache.deserialize(TOKEN_CACHE.read_text())
+
+    app = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY, token_cache=msal_cache)
+    accounts = app.get_accounts()
+    account = accounts[0] if accounts else None
+
+    result = app.acquire_token_silent(SCOPES, account=account)
+    if result and "access_token" in result:
+        if msal_cache.has_state_changed:
+            TOKEN_CACHE.write_text(msal_cache.serialize())
+        return result["access_token"]
+
+    # Fallback: raw cache read
+    if TOKEN_CACHE.exists():
+        cache = json.load(open(TOKEN_CACHE))
+        at = cache.get("AccessToken", {})
+        for key, val in at.items():
+            if isinstance(val, dict) and "secret" in val:
+                return val["secret"]
+
     raise HTTPException(status_code=500, detail="No access token found")
 
 

@@ -23,6 +23,10 @@ ACCOUNT_ID = '87fbfc0e-dfa2-4621-aab2-319dad4e93ae.c44c0a70-24ac-4b5c-adc5-8c24d
 # Destination Outlook folder
 ACCOUNTING_FOLDER_ID = 'AAMkAGY1MmU1ODA4LTM1ODUtNGRlNC1iMzkwLWNkMzY5MjlkZjNkMAAuAAAAAABJeHP2wkpCToySbdGEyMhDAQAaI8cPJGD4Q7IgwPjtj_8LAAJN613FAAA='
 
+# SAFETY: This script NEVER deletes emails. It only moves them.
+# mcporter move_email is BANNED - it can hard-delete when folder lookup fails.
+# All moves go through Graph API /messages/{id}/move with pre/post verification.
+
 # OneDrive Q1–Q4 folders (Q3/Q4 created on demand)
 STATEMENTS_FOLDER_ID = '017IBDTVS6U7GEAQVW4FH3WPYHKWF26BGE'
 GRAPH_BASE = 'https://graph.microsoft.com/v1.0/me/drive'
@@ -243,16 +247,66 @@ def download_attachment(email_id: str, attachment_id: str, save_path: str) -> di
     })
 
 
+def verify_email_exists(email_id: str, token: str) -> bool:
+    """Verify an email still exists in the mailbox."""
+    try:
+        resp = requests.get(
+            f'https://graph.microsoft.com/v1.0/me/messages/{email_id}?$select=id',
+            headers={'Authorization': f'Bearer {token}'}, timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def move_email_to_accounting(email_id: str, token: str) -> bool:
+    """Move email with pre-move and post-move verification.
+
+    Safety protocol (prevents data loss):
+    1. Verify email exists before move
+    2. Call Graph API move
+    3. Verify email arrived in destination folder
+    4. If post-verify fails, flag critical error
+    5. Never consider move successful unless email is confirmed in destination
+    """
+    # Phase 1: Pre-move verification
+    if not verify_email_exists(email_id, token):
+        print('    PRE-MOVE CHECK FAILED: email not found. ABORTING move.')
+        return False
+
+    # Phase 2: Execute move
     try:
         resp = requests.post(
             f'https://graph.microsoft.com/v1.0/me/messages/{email_id}/move',
             headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
             json={'destinationId': ACCOUNTING_FOLDER_ID}, timeout=15,
         )
-        return resp.status_code in (200, 201)
+        if resp.status_code not in (200, 201):
+            print(f'    Move API returned {resp.status_code}. ABORTING.')
+            return False
     except Exception as e:
-        print(f'    ERROR moving email: {e}')
+        print(f'    Move API exception: {e}. ABORTING.')
+        return False
+
+    # Phase 3: Post-move verification
+    new_id = resp.json().get('id', email_id)
+    try:
+        verify_resp = requests.get(
+            f'https://graph.microsoft.com/v1.0/me/messages/{new_id}?$select=id,parentFolderId',
+            headers={'Authorization': f'Bearer {token}'}, timeout=10,
+        )
+        if verify_resp.status_code == 200:
+            folder_id = verify_resp.json().get('parentFolderId', '')
+            if folder_id == ACCOUNTING_FOLDER_ID:
+                return True
+            else:
+                print(f'    POST-MOVE WARNING: email in wrong folder.')
+                return False
+        else:
+            print(f'    POST-MOVE CRITICAL: email not found after move. EMAIL MAY BE LOST!')
+            return False
+    except Exception as e:
+        print(f'    POST-MOVE verification exception: {e}. Cannot confirm email safety.')
         return False
 
 
