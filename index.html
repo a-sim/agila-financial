@@ -230,7 +230,7 @@ async function loadRevenue() {
 
 async function loadExpenses() {
   var vatRes = await Promise.all([
-    fetch("/api/expenses").then(function(r){return r.json()}),
+    fetch("/api/expenses?limit=500").then(function(r){return r.json()}),
     fetch("/api/vat").then(function(r){return r.json()}),
   ]);
   var exp = vatRes[0];
@@ -278,26 +278,6 @@ async function loadExpenses() {
   });
   var topCat = Object.entries(catTotalsQ).sort(function(a,b){return b[1]-a[1]})[0];
 
-  // Build table rows with VAT recovery detail
-  var expRows = expenses.slice(0, 50).map(function(e) {
-    var net = parseFloat(e.amount)||0;
-    var vatAmt = parseFloat(e.amount_vat)||0;
-    var rec = parseFloat(e.vat_recoverable)||0;
-    var nonRec = Math.max(0, vatAmt - rec);
-    var status = rec > 0 && nonRec == 0 ? 'var(--green)' : rec > 0 && nonRec > 0 ? 'var(--yellow)' : 'var(--red)';
-    var statusLabel = rec > 0 && nonRec == 0 ? '✓ Recoverable' : rec > 0 && nonRec > 0 ? '◐ Partial' : '✗ Not recoverable';
-    var srcBadge = e.source ? '<span class="bank-chip">'+h(e.source)+'</span>' : '';
-    return '<tr class="exp-row" onclick="toggleExpDetail(this)" data-exp="'+h(JSON.stringify(e)).replace(/"/g,'&quot;')+'">' +
-      '<td>' + h(e.date||'') + '</td>' +
-      '<td>' + h(e.vendor||e.category||'') + '</td>' +
-      '<td>' + h(e.category||'') + '</td>' +
-      '<td class="amount">EUR ' + eur(net) + '</td>' +
-      '<td class="amount">EUR ' + eur(vatAmt) + '</td>' +
-      '<td class="amount" style="color:'+status+'">' + statusLabel + '</td>' +
-      '<td class="amount">' + srcBadge + '</td>' +
-      '</tr>';
-  }).join("");
-
   // Category summary rows
   var catRows = cats.map(function(c) {
     var recColor = (c.vat_recoverable||0)>0 ? "var(--green)" : "var(--red)";
@@ -307,6 +287,34 @@ async function loadExpenses() {
       '<td class="amount" style="color:' + recColor + '">EUR ' + eur(c.vat_recoverable||0) + '</td>' +
       '<td class="amount" style="color:' + nonRecColor + '">EUR ' + eur(c.non_deductible||0) + '</td></tr>';
   }).join("");
+
+  // Distinct categories and periods from the full dataset
+  var catSet = {};
+  var periodSet = {};
+  expenses.forEach(function(e){
+    if (e.category) catSet[e.category] = true;
+    if (e.date && e.date.length >= 7) {
+      var y = parseInt(e.date.slice(0,4));
+      var m = parseInt(e.date.slice(5,7));
+      if (!isNaN(y) && !isNaN(m)) {
+        periodSet["Q" + Math.ceil(m/3) + " " + y] = true;
+      }
+    }
+  });
+  var catList = Object.keys(catSet).sort();
+  var periodList = Object.keys(periodSet).sort(function(a,b){
+    var ya=parseInt(a.split(' ')[1]), yb=parseInt(b.split(' ')[1]);
+    if (ya!==yb) return yb-ya;
+    return ['Q4','Q3','Q2','Q1'].indexOf(a.split(' ')[0])-['Q4','Q3','Q2','Q1'].indexOf(b.split(' ')[0]);
+  });
+
+  var catPillsHtml = '<button class="filter-btn active" onclick="setExpCat(\'\', this)">All</button>' +
+    catList.map(function(c){
+      return '<button class="filter-btn" onclick="setExpCat(\''+h(c)+'\', this)">'+h(c)+'</button>';
+    }).join('');
+
+  var periodOpts = '<option value="">All Periods</option>' +
+    periodList.map(function(p){return '<option value="'+h(p)+'">'+h(p)+'</option>'}).join('');
 
   var qMonths = 1; // partial quarter
   setHTML(el,
@@ -319,9 +327,9 @@ async function loadExpenses() {
 
     '<div class="filter-bar">' +
       '<select class="filter-sel" id="expViewSel" onchange="setExpView(this.value)">' +
-        '<option value="category">By Category</option>' +
-        '<option value="chart">Bar Chart</option>' +
         '<option value="table">Table</option>' +
+        '<option value="chart">Bar Chart</option>' +
+        '<option value="category">By Category</option>' +
       '</select>' +
       '<select class="filter-sel" id="expCatFilt" onchange="renderExpChart()">' +
         '<option value="">All Categories</option>' +
@@ -329,23 +337,30 @@ async function loadExpenses() {
       '</select>' +
     '</div>' +
 
-    '<div class="chart-wrap" id="expChartWrap"><canvas id="expChart"></canvas></div>' +
-    '<div id="expTableWrap" style="display:none">' +
+    '<div class="chart-wrap" id="expChartWrap" style="display:none"><canvas id="expChart"></canvas></div>' +
+
+    '<div id="expTableWrap">' +
       '<div style="margin-bottom:8px">' +
-        '<input id="expSearch" onkeyup="filterExpTable()" placeholder="Search vendor, category..." style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">' +
+        '<input id="expSearch" oninput="renderExpTable()" placeholder="Search vendor, notes, description, email..." style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">' +
       '</div>' +
+      '<div class="filter-bar" id="expCatPills">' + catPillsHtml + '</div>' +
+      '<div class="filter-bar">' +
+        '<select class="filter-sel" id="expPeriodSel" onchange="renderExpTable()">' + periodOpts + '</select>' +
+      '</div>' +
+      '<div id="expCountLine" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>' +
       '<div style="overflow-x:auto">' +
       '<table class="cat-table" id="expTable"><thead><tr>' +
-        '<th onclick="sortExpTable(0)">Date ↕</th>' +
-        '<th onclick="sortExpTable(1)">Vendor ↕</th>' +
-        '<th onclick="sortExpTable(2)">Category ↕</th>' +
-        '<th onclick="sortExpTable(3)" class="amount">Net ↕</th>' +
-        '<th onclick="sortExpTable(4)" class="amount">VAT ↕</th>' +
-        '<th onclick="sortExpTable(5)" class="amount">Recoverable ↕</th>' +
+        '<th>Date</th>' +
+        '<th>Vendor</th>' +
+        '<th>Category</th>' +
+        '<th class="amount">Net</th>' +
+        '<th class="amount">VAT</th>' +
+        '<th class="amount">Recoverable</th>' +
         '<th>Source</th>' +
-      '</tr></thead><tbody id="expTableBody">' + expRows + '</tbody></table></div>' +
+      '</tr></thead><tbody id="expTableBody"></tbody></table></div>' +
     '</div>' +
 
+    '<div id="expCategoryWrap" style="display:none">' +
     '<div class="section-title">By Category (with VAT Recovery)</div>' +
     '<table class="cat-table"><thead><tr><th>Category</th><th class="amount">Total</th><th class="amount">VAT Rate</th><th class="amount">VAT Deductible</th><th class="amount">Non-Deductible</th></tr></thead><tbody>' + catRows + '</tbody></table>' +
 
@@ -353,23 +368,98 @@ async function loadExpenses() {
       '<strong>Note:</strong> Restaurant/meals = 14–17% VAT, 0% recovery (entertainment). Hotel = 3% super-reduced, fully recoverable. ' +
       'Car/EV in Luxembourg = 17%, fully recoverable. Cross-border EU = EU refund directive (pending). ' +
       'US/foreign subscriptions = reverse charge (0% VAT).' +
-    '</div>');
+    '</div></div>');
 
   // Build bar chart data: by category (net + VAT stacked)
   window._expData = {cats: cats, expenses: expenses};
-  renderExpChart();
+  window._expFilt = {cat:"", period:""};
+  renderExpTable();
 }
 
 function setExpView(view) {
   var chartWrap = document.getElementById("expChartWrap");
   var tableWrap = document.getElementById("expTableWrap");
+  var catWrap = document.getElementById("expCategoryWrap");
+  chartWrap.style.display = "none";
+  tableWrap.style.display = "none";
+  if (catWrap) catWrap.style.display = "none";
   if (view === "table") {
-    chartWrap.style.display = "none";
     tableWrap.style.display = "block";
-  } else {
+  } else if (view === "chart") {
     chartWrap.style.display = "block";
-    tableWrap.style.display = "none";
-    if (view === "chart") renderExpChart();
+    renderExpChart();
+  } else if (view === "category" && catWrap) {
+    catWrap.style.display = "block";
+  }
+}
+
+function setExpCat(cat, btn) {
+  window._expFilt = window._expFilt || {cat:"", period:""};
+  window._expFilt.cat = cat;
+  document.querySelectorAll('#expCatPills .filter-btn').forEach(function(b){b.classList.remove('active')});
+  if (btn) btn.classList.add('active');
+  renderExpTable();
+}
+
+function renderExpTable() {
+  var d = window._expData;
+  if (!d) return;
+  var filt = window._expFilt || {cat:"", period:""};
+  var searchEl = document.getElementById("expSearch");
+  var periodEl = document.getElementById("expPeriodSel");
+  var q = searchEl ? searchEl.value.toLowerCase() : "";
+  var period = periodEl ? periodEl.value : "";
+  var rows = d.expenses.filter(function(e){
+    if (filt.cat && e.category !== filt.cat) return false;
+    if (period && e.date && e.date.length >= 7) {
+      var y = parseInt(e.date.slice(0,4));
+      var m = parseInt(e.date.slice(5,7));
+      var ep = "Q" + Math.ceil(m/3) + " " + y;
+      if (ep !== period) return false;
+    } else if (period) {
+      return false;
+    }
+    if (q) {
+      var hay = ((e.vendor||'') + ' ' + (e.notes||'') + ' ' + (e.description||'') + ' ' + (e.email_subject||'') + ' ' + (e.category||'')).toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+
+  var totalAmt = 0;
+  rows.forEach(function(e){
+    totalAmt += (parseFloat(e.amount)||0) + (parseFloat(e.amount_vat)||0);
+  });
+
+  var html = rows.map(function(e){
+    var net = parseFloat(e.amount)||0;
+    var vatAmt = parseFloat(e.amount_vat)||0;
+    var rec = parseFloat(e.vat_recoverable)||0;
+    var nonRec = Math.max(0, vatAmt - rec);
+    var color = rec > 0 && nonRec == 0 ? 'var(--green)' : rec > 0 && nonRec > 0 ? 'var(--yellow)' : 'var(--red)';
+    var label = rec > 0 && nonRec == 0 ? '✓ Rec.' : rec > 0 && nonRec > 0 ? '◐ Partial' : '✗ None';
+    var srcBadge = e.source ? '<span class="bank-chip">'+h(e.source)+'</span>' : '';
+    var confirmed = e.status === 'confirmed';
+    var vendorCell = (confirmed ? '<span style="color:var(--green);margin-right:4px" title="Confirmed">✓</span>' : '') + h(e.vendor||e.category||'');
+    return '<tr class="exp-row" data-exp-id="'+h(e.id)+'" onclick="toggleExpDetail(this)" style="cursor:pointer">' +
+      '<td>' + h(e.date||'') + '</td>' +
+      '<td>' + vendorCell + '</td>' +
+      '<td>' + h(e.category||'') + '</td>' +
+      '<td class="amount">EUR ' + eur(net) + '</td>' +
+      '<td class="amount">EUR ' + eur(vatAmt) + '</td>' +
+      '<td class="amount" style="color:'+color+'">' + label + '</td>' +
+      '<td class="amount">' + srcBadge + '</td>' +
+      '</tr>' +
+      '<tr class="exp-detail-row" data-detail-for="'+h(e.id)+'" style="display:none"><td colspan="7" style="padding:0;border:none">' +
+      '<div class="tx-detail" id="exp-detail-'+h(e.id)+'" style="display:block;margin:0;padding:12px 14px;border-top:1px solid var(--border);background:var(--surface2)"></div>' +
+      '</td></tr>';
+  }).join('');
+  if (!rows.length) html = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No expenses match filters</td></tr>';
+  setHTML("expTableBody", html);
+
+  var countLine = document.getElementById("expCountLine");
+  if (countLine) {
+    countLine.textContent = "Showing " + rows.length + " expense" + (rows.length===1?"":"s") + " (EUR " + eur(totalAmt) + ")";
   }
 }
 
@@ -409,36 +499,83 @@ function renderExpChart() {
   });
 }
 
-var _expSortCol = 0, _expSortAsc = false;
-function sortExpTable(col) {
-  _expSortAsc = _expSortCol === col ? !_expSortAsc : true;
-  _expSortCol = col;
-  renderSortedExpTable();
+function _findExpenseById(id) {
+  var d = window._expData;
+  if (!d) return null;
+  var target = String(id);
+  for (var i=0; i<d.expenses.length; i++) {
+    if (String(d.expenses[i].id) === target) return d.expenses[i];
+  }
+  return null;
 }
-function renderSortedExpTable() {
-  var tbody = document.getElementById("expTableBody");
-  if (!tbody) return;
-  var rows = Array.from(tbody.querySelectorAll("tr"));
-  rows.sort(function(a,b){
-    var aa = a.cells[_expSortCol].textContent.trim();
-    var bb = b.cells[_expSortCol].textContent.trim();
-    var na = parseFloat(aa.replace(/[^0-9.-]/g,""));
-    var nb = parseFloat(bb.replace(/[^0-9.-]/g,""));
-    if (!isNaN(na) && !isNaN(nb)) return _expSortAsc ? na-nb : nb-na;
-    return _expSortAsc ? aa.localeCompare(bb) : bb.localeCompare(aa);
-  });
-  rows.forEach(function(r){ tbody.appendChild(r); });
-}
-function filterExpTable() {
-  var q = document.getElementById("expSearch").value.toLowerCase();
-  var tbody = document.getElementById("expTableBody");
-  if (!tbody) return;
-  tbody.querySelectorAll("tr").forEach(function(r){
-    r.style.display = r.textContent.toLowerCase().includes(q) ? "" : "none";
-  });
-}
+
 function toggleExpDetail(el) {
-  // For future expanded detail row
+  var id = el.getAttribute('data-exp-id');
+  if (!id) return;
+  var detailRow = document.querySelector('tr.exp-detail-row[data-detail-for="'+id.replace(/"/g,'\\"')+'"]');
+  if (!detailRow) return;
+  var panel = document.getElementById('exp-detail-'+id);
+  var isOpen = detailRow.style.display !== "none";
+  if (isOpen) {
+    detailRow.style.display = "none";
+    return;
+  }
+  detailRow.style.display = "";
+  if (panel) renderExpDetailPanel(panel, id);
+}
+
+function renderExpDetailPanel(panel, id) {
+  var e = _findExpenseById(id);
+  if (!e) { panel.textContent = "Expense not found"; return; }
+  var net = parseFloat(e.amount)||0;
+  var vatAmt = parseFloat(e.amount_vat)||0;
+  var rate = parseFloat(e.vat_rate)||0;
+  var rec = parseFloat(e.vat_recoverable)||0;
+  var nonRec = Math.max(0, vatAmt - rec);
+  var gross = net + vatAmt;
+  var confirmed = e.status === 'confirmed';
+  var btnLabel = confirmed ? 'Unconfirm' : 'Confirm';
+  var btnColor = confirmed ? 'var(--muted)' : 'var(--green)';
+  var lines = [];
+  lines.push('<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:8px">');
+  lines.push('<div style="font-size:13px;font-weight:600;color:var(--text)">' + h(e.vendor||'(no vendor)') + '</div>');
+  lines.push('<button onclick="setExpStatus(\''+h(e.id)+'\', \''+(confirmed?'pending':'confirmed')+'\')" style="padding:4px 10px;border-radius:6px;border:1px solid '+btnColor+';background:transparent;color:'+btnColor+';font-size:11px;font-weight:600;cursor:pointer">'+btnLabel+'</button>');
+  lines.push('</div>');
+  lines.push('<div style="font-size:12px;color:var(--text);line-height:1.7">');
+  lines.push('<div><strong>Breakdown:</strong> Net EUR '+eur(net)+' + VAT EUR '+eur(vatAmt)+' ('+(rate*100).toFixed(0)+'%) = EUR '+eur(gross)+'</div>');
+  lines.push('<div><strong>VAT recovery:</strong> EUR '+eur(rec)+' recoverable, EUR '+eur(nonRec)+' non-recoverable</div>');
+  lines.push('<div><strong>Source:</strong> '+h(e.source||'manual')+'</div>');
+  if (e.onedrive_path) lines.push('<div><strong>OneDrive:</strong> <span style="color:var(--muted);word-break:break-all">'+h(e.onedrive_path)+'</span></div>');
+  if (e.email_subject) lines.push('<div><strong>Email:</strong> '+h(e.email_subject)+'</div>');
+  if (e.description) lines.push('<div><strong>Description:</strong> '+h(e.description)+'</div>');
+  if (e.notes) lines.push('<div><strong>Notes:</strong> '+h(e.notes)+'</div>');
+  if (e.receipt_id) lines.push('<div><strong>Receipt ID:</strong> '+h(e.receipt_id)+'</div>');
+  if (e.matched_to_bank_id) lines.push('<div><strong>Linked bank tx:</strong> #'+h(e.matched_to_bank_id)+'</div>');
+  lines.push('<div><strong>Status:</strong> '+(confirmed?'<span style="color:var(--green)">✓ confirmed</span>':'<span style="color:var(--muted)">pending</span>')+'</div>');
+  lines.push('</div>');
+  setHTML(panel, lines.join(''));
+}
+
+async function setExpStatus(id, status) {
+  try {
+    var res = await fetch('/api/expenses/'+encodeURIComponent(id)+'/status', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({status: status})
+    });
+    if (!res.ok) throw new Error('status update failed');
+    var e = _findExpenseById(id);
+    if (e) e.status = status;
+    renderExpTable();
+    var detailRow = document.querySelector('tr.exp-detail-row[data-detail-for="'+String(id).replace(/"/g,'\\"')+'"]');
+    if (detailRow) {
+      detailRow.style.display = "";
+      var panel = document.getElementById('exp-detail-'+id);
+      if (panel) renderExpDetailPanel(panel, id);
+    }
+  } catch(err) {
+    alert('Could not update status: '+err.message);
+  }
 }
 
 async function loadVAT() {
@@ -546,8 +683,8 @@ function renderRecon() {
   txns.forEach(function(t){var k=t.match_status||"?";byS[k]=(byS[k]||0)+1});
   var mH=byS["MISSING - HIGH"]||0, mM=byS["MISSING - MEDIUM"]||0, mL=byS["MISSING - LOW"]||0;
 
-  // Build dynamic period options from by_period keys + VAT API quarters
-  var periodKeys = Object.keys(d.by_period||{}).sort(function(a,b){
+  // Build dynamic period options from by_period keys (already unified across tables)
+  var periodKeys = Object.keys(d.by_period||{}).filter(function(p){return p && p!=="?"}).sort(function(a,b){
     var ya=parseInt(a.split(' ')[1]), yb=parseInt(b.split(' ')[1]);
     var qa=a.split(' ')[0], qb=b.split(' ')[0];
     if (ya!==yb) return ya-yb;
@@ -555,17 +692,9 @@ function renderRecon() {
   });
   var periodOpts = periodKeys.map(function(p){return '<option value="'+h(p)+'">'+h(p)+'</option>'}).join('');
 
-  // Enhance with Q2 2026 from VAT API if not already present
-  (function hydrateQ2(){
-    fetch("/api/vat").then(function(r){return r.json()}).then(function(vatData){
-      var aq = (vatData.available_quarters||[]).map(function(q){return q.quarter+' '+q.year});
-      aq.forEach(function(p){
-        if (periodOpts.indexOf(p)<0) periodOpts += '<option value="'+h(p)+'">'+h(p)+'</option>';
-      });
-      var sel = document.getElementById("periodSel");
-      if (sel) sel.innerHTML = '<option value="all">All Periods</option>' + periodOpts;
-    }).catch(function(){});
-  })();
+  // Build dynamic bank options from by_bank keys
+  var bankKeys = Object.keys(d.by_bank||{}).filter(function(b){return b && b!=="?"}).sort();
+  var bankOpts = bankKeys.map(function(b){return '<option value="'+h(b)+'">'+h(b)+'</option>'}).join('');
 
   setHTML("tab-bank",
     '<div class="kpi-grid">' +
@@ -581,7 +710,7 @@ function renderRecon() {
       '<button class="filter-btn" id="fPending" onclick="setF(\'status\',\'pending\',this)">Pending</button>' +
     '</div>' +
     '<div class="filter-bar">' +
-      '<select class="filter-sel" onchange="setF(\'bank\',this.value)"><option value="all">All Banks</option><option value="Everest">Everest</option><option value="Revolut">Revolut</option></select>' +
+      '<select class="filter-sel" onchange="setF(\'bank\',this.value)"><option value="all">All Banks</option>'+bankOpts+'</select>' +
       '<select class="filter-sel" id="periodSel" onchange="setF(\'period\',this.value)"><option value="all">All Periods</option>'+periodOpts+'</select>' +
     '</div>' +
     '<div id="recon-list"></div>');

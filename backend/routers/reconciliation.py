@@ -110,6 +110,104 @@ def sync_status():
 
 # ---- Existing reconciliation_data endpoints ----
 
+_BT_STATUS_MAP = {
+    "matched": "MATCHED",
+    "pending_review": "PENDING",
+    "transfer": "NO RECEIPT NEEDED",
+    "unmatched": "MISSING - MEDIUM",
+}
+
+
+def _iso_from_rd_date(d: Optional[str]) -> Optional[str]:
+    """Convert DD.MM.YYYY (reconciliation_data format) to YYYY-MM-DD."""
+    if not d:
+        return None
+    parts = d.split(".")
+    if len(parts) == 3 and len(parts[2]) == 4:
+        return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+    return d
+
+
+def _period_from_iso(iso_date: Optional[str]) -> Optional[str]:
+    if not iso_date or len(iso_date) < 7:
+        return None
+    try:
+        year = int(iso_date[:4])
+        month = int(iso_date[5:7])
+        return f"Q{(month - 1) // 3 + 1} {year}"
+    except (ValueError, IndexError):
+        return None
+
+
+def _normalize_rd_row(row: dict) -> dict:
+    iso = _iso_from_rd_date(row.get("date"))
+    return {
+        "id": f"rd-{row['id']}",
+        "date": iso or row.get("date"),
+        "bank": row.get("bank"),
+        "description": row.get("description"),
+        "amount": row.get("amount"),
+        "currency": row.get("currency") or "EUR",
+        "match_status": row.get("match_status"),
+        "receipt_file": row.get("receipt_file"),
+        "notes": row.get("notes"),
+        "period": row.get("period"),
+        "source_table": "reconciliation_data",
+    }
+
+
+def _normalize_bt_row(row: dict) -> dict:
+    iso = row.get("date")
+    status = _BT_STATUS_MAP.get(row.get("reconciliation_status"), "MISSING - MEDIUM")
+    desc = row.get("description") or row.get("partner") or row.get("vendor_inferred") or ""
+    # Revolut is the origin bank via odoo_revolut source
+    bank = "Revolut"
+    return {
+        "id": f"bt-{row['id']}",
+        "date": iso,
+        "bank": bank,
+        "description": desc,
+        "amount": row.get("amount"),
+        "currency": row.get("currency") or "EUR",
+        "match_status": status,
+        "receipt_file": None,
+        "notes": row.get("notes"),
+        "period": _period_from_iso(iso),
+        "source_table": "bank_transactions",
+    }
+
+
+def _passes_filters(
+    tx: dict,
+    period: Optional[str],
+    match_status: Optional[str],
+    bank: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    amount_min: Optional[float],
+    amount_max: Optional[float],
+) -> bool:
+    if period and tx.get("period") != period:
+        return False
+    if match_status and tx.get("match_status") != match_status:
+        return False
+    if bank and tx.get("bank") != bank:
+        return False
+    d = tx.get("date") or ""
+    if date_from and d < date_from:
+        return False
+    if date_to and d > date_to:
+        return False
+    amt = tx.get("amount") or 0
+    # Existing semantics: amounts are negative for expenses; amount_min/max
+    # filter by absolute magnitude of expense.
+    if amount_min is not None and amt > -amount_min:
+        return False
+    if amount_max is not None and amt < -amount_max:
+        return False
+    return True
+
+
 @router.get("/reconciliation")
 def get_reconciliation(
     period: Optional[str] = None,
@@ -123,102 +221,60 @@ def get_reconciliation(
     conn = get_connection()
     cur = conn.cursor()
 
-    # Build filtered query
-    where_clauses = []
-    params = []
+    cur.execute("SELECT * FROM reconciliation_data")
+    rd_rows = [_normalize_rd_row(dict(r)) for r in cur.fetchall()]
 
-    if period:
-        where_clauses.append("period = ?")
-        params.append(period)
-    if match_status:
-        where_clauses.append("match_status = ?")
-        params.append(match_status)
-    if bank:
-        where_clauses.append("bank = ?")
-        params.append(bank)
-    if date_from:
-        where_clauses.append("date >= ?")
-        params.append(date_from)
-    if date_to:
-        where_clauses.append("date <= ?")
-        params.append(date_to)
-    if amount_min is not None:
-        where_clauses.append("amount <= ?")  # amounts are negative (expenses)
-        params.append(-amount_min)
-    if amount_max is not None:
-        where_clauses.append("amount >= ?")
-        params.append(-amount_max)
+    cur.execute("SELECT * FROM bank_transactions")
+    bt_rows = [_normalize_bt_row(dict(r)) for r in cur.fetchall()]
 
-    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+    all_rows = rd_rows + bt_rows
+    all_rows.sort(key=lambda t: t.get("date") or "", reverse=True)
 
-    # All transactions with filters
-    cur.execute(
-        f"SELECT * FROM reconciliation_data WHERE {where_sql} ORDER BY date DESC",
-        params,
-    )
-    transactions = [dict(row) for row in cur.fetchall()]
+    transactions = [
+        t for t in all_rows
+        if _passes_filters(t, period, match_status, bank, date_from, date_to, amount_min, amount_max)
+    ]
 
-    # Summary stats (unfiltered)
-    cur.execute("SELECT COUNT(*) FROM reconciliation_data")
-    total_count = cur.fetchone()[0]
+    total_count = len(all_rows)
 
-    cur.execute(
-        "SELECT COUNT(*) FROM reconciliation_data WHERE match_status IN ('MATCHED', 'MATCHED (IMAGE)')"
-    )
-    matched_count = cur.fetchone()[0]
+    def _is_matched(s): return bool(s) and "MATCHED" in s
+    def _is_missing(s): return bool(s) and s.startswith("MISSING")
+    def _is_pending(s): return bool(s) and s.startswith("PENDING")
+    def _is_tesla(s): return bool(s) and s.startswith("TESLA")
+    def _is_no_receipt(s): return s == "NO RECEIPT NEEDED"
 
-    cur.execute(
-        "SELECT COUNT(*) FROM reconciliation_data WHERE match_status LIKE 'MISSING%'"
-    )
-    missing_count = cur.fetchone()[0]
+    matched_count = sum(1 for t in all_rows if _is_matched(t["match_status"]))
+    missing_count = sum(1 for t in all_rows if _is_missing(t["match_status"]))
+    pending_count = sum(1 for t in all_rows if _is_pending(t["match_status"]))
+    tesla_count = sum(1 for t in all_rows if _is_tesla(t["match_status"]))
+    no_receipt_count = sum(1 for t in all_rows if _is_no_receipt(t["match_status"]))
 
-    cur.execute(
-        "SELECT COUNT(*) FROM reconciliation_data WHERE match_status LIKE 'PENDING%'"
-    )
-    pending_count = cur.fetchone()[0]
+    by_status: dict = {}
+    for t in all_rows:
+        s = t["match_status"] or "?"
+        by_status[s] = by_status.get(s, 0) + 1
 
-    cur.execute(
-        "SELECT COUNT(*) FROM reconciliation_data WHERE match_status LIKE 'TESLA%'"
-    )
-    tesla_count = cur.fetchone()[0]
+    by_bank: dict = {}
+    for t in all_rows:
+        b = t["bank"] or "?"
+        entry = by_bank.setdefault(b, {"count": 0, "total": 0.0})
+        entry["count"] += 1
+        entry["total"] += t.get("amount") or 0
 
-    cur.execute(
-        "SELECT COUNT(*) FROM reconciliation_data WHERE match_status = 'NO RECEIPT NEEDED'"
-    )
-    no_receipt_count = cur.fetchone()[0]
+    by_period: dict = {}
+    for t in all_rows:
+        p = t["period"] or "?"
+        entry = by_period.setdefault(p, {"count": 0, "total": 0.0})
+        entry["count"] += 1
+        entry["total"] += t.get("amount") or 0
 
-    # By status
-    cur.execute(
-        "SELECT match_status, COUNT(*) as cnt FROM reconciliation_data GROUP BY match_status ORDER BY cnt DESC"
-    )
-    by_status = {row["match_status"]: row["cnt"] for row in cur.fetchall()}
-
-    # By bank
-    cur.execute(
-        "SELECT bank, COUNT(*) as cnt, SUM(amount) as total FROM reconciliation_data GROUP BY bank"
-    )
-    by_bank = {
-        row["bank"]: {"count": row["cnt"], "total": row["total"]}
-        for row in cur.fetchall()
-    }
-
-    # By period
-    cur.execute(
-        "SELECT period, COUNT(*) as cnt, SUM(amount) as total FROM reconciliation_data GROUP BY period"
-    )
-    by_period = {
-        row["period"]: {"count": row["cnt"], "total": row["total"]}
-        for row in cur.fetchall()
-    }
-
-    # Missing by priority
-    cur.execute(
-        "SELECT match_status, COUNT(*) as cnt, SUM(amount) as total FROM reconciliation_data WHERE match_status LIKE 'MISSING%' GROUP BY match_status"
-    )
-    missing_breakdown = {
-        row["match_status"]: {"count": row["cnt"], "total": row["total"]}
-        for row in cur.fetchall()
-    }
+    missing_breakdown: dict = {}
+    for t in all_rows:
+        s = t["match_status"]
+        if _is_missing(s):
+            entry = missing_breakdown.setdefault(s, {"count": 0, "total": 0.0})
+            entry["count"] += 1
+            entry["total"] += t.get("amount") or 0
 
     matched_pct = round((matched_count / total_count * 100), 1) if total_count > 0 else 0
 
@@ -252,26 +308,17 @@ def export_csv(
     conn = get_connection()
     cur = conn.cursor()
 
-    where_clauses = []
-    params = []
-    if period:
-        where_clauses.append("period = ?")
-        params.append(period)
-    if match_status:
-        where_clauses.append("match_status = ?")
-        params.append(match_status)
-    if bank:
-        where_clauses.append("bank = ?")
-        params.append(bank)
-
-    where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-
-    cur.execute(
-        f"SELECT period, date, bank, description, amount, currency, match_status, receipt_file, notes FROM reconciliation_data WHERE {where_sql} ORDER BY date",
-        params,
-    )
-    rows = cur.fetchall()
+    cur.execute("SELECT * FROM reconciliation_data")
+    rd_rows = [_normalize_rd_row(dict(r)) for r in cur.fetchall()]
+    cur.execute("SELECT * FROM bank_transactions")
+    bt_rows = [_normalize_bt_row(dict(r)) for r in cur.fetchall()]
     conn.close()
+
+    rows = [
+        t for t in (rd_rows + bt_rows)
+        if _passes_filters(t, period, match_status, bank, None, None, None, None)
+    ]
+    rows.sort(key=lambda t: t.get("date") or "")
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -286,10 +333,22 @@ def export_csv(
             "Match Status",
             "Receipt File",
             "Notes",
+            "Source",
         ]
     )
-    for row in rows:
-        writer.writerow(list(row))
+    for t in rows:
+        writer.writerow([
+            t.get("period"),
+            t.get("date"),
+            t.get("bank"),
+            t.get("description"),
+            t.get("amount"),
+            t.get("currency"),
+            t.get("match_status"),
+            t.get("receipt_file"),
+            t.get("notes"),
+            t.get("source_table"),
+        ])
 
     output.seek(0)
     return StreamingResponse(

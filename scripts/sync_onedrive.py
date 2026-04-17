@@ -36,6 +36,7 @@ ACCOUNT_ID = "87fbfc0e-dfa2-4621-aab2-319dad4e93ae.c44c0a70-24ac-4b5c-adc5-8c24d
 SCAN_PATHS = [
     "01_Agila_Lux/01_Accounting/01_Invoices-Expenses_Agila_SHARED/01_Expenses_Incoming/2026/2026_Invoices-Receipts-Statements/2026Q1_Invoices-Receipts",
     "01_Agila_Lux/01_Accounting/01_Invoices-Expenses_Agila_SHARED/01_Expenses_Incoming/2026/2026_Invoices-Receipts-Statements/2026Q2_Invoices-Receipts",
+    "01_Agila_Lux/01_Accounting/01_Invoices-Expenses_Agila_SHARED/01_Expenses_Incoming/2026/2026_Invoices-Receipts-Statements/2026Q3_Invoices-Receipts",
     "01_Agila_Lux/01_Accounting/04_Receipts-Agila/2026",
 ]
 
@@ -177,9 +178,21 @@ def parse_filename(filename):
         last = remaining_parts[-1]
         amount_match = re.match(r"^(\d+\.?\d*)(EUR|USD|GBP|NT)$", last)
         if amount_match:
-            amount = float(amount_match.group(1))
+            raw_amount = amount_match.group(1)
+            amount = float(raw_amount)
             currency = amount_match.group(2)
             remaining_parts = remaining_parts[:-1]
+            # Amount sanity: if no decimal point in raw amount and value > 500,
+            # the filename likely omitted the decimal (e.g., 3122EUR = 31.22EUR).
+            # Heuristic: divide by 100 and check if the result looks more plausible.
+            # Only applies when the raw string has no '.' — amounts over 500 without
+            # decimals are rare for expense receipts.
+            if '.' not in raw_amount and amount > 500:
+                candidate = amount / 100
+                print(f"  WARNING: Amount {amount:.2f} has no decimal point and exceeds 500. "
+                      f"Possible missing decimal — likely {candidate:.2f}. "
+                      f"Importing as 0 and flagging for manual review.")
+                amount = 0.0  # Flag for manual review instead of guessing
 
     # The rest is vendor + description
     vendor_desc = " ".join(remaining_parts) if remaining_parts else "Unknown"
