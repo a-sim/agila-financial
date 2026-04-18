@@ -1,9 +1,34 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from datetime import date as _date
 from database import get_connection
 
 router = APIRouter(prefix="/api/expenses", tags=["expenses"])
+
+
+def _period_label(date_str: str, grouping: str) -> Optional[str]:
+    if not date_str or len(date_str) < 10:
+        return None
+    try:
+        y = int(date_str[0:4])
+        m = int(date_str[5:7])
+        d = int(date_str[8:10])
+    except ValueError:
+        return None
+    if grouping == "yearly":
+        return f"{y:04d}"
+    if grouping == "quarterly":
+        return f"{y:04d}-Q{(m - 1) // 3 + 1}"
+    if grouping == "monthly":
+        return f"{y:04d}-{m:02d}"
+    if grouping == "weekly":
+        try:
+            iso = _date(y, m, d).isocalendar()
+        except ValueError:
+            return None
+        return f"{iso[0]:04d}-W{iso[1]:02d}"
+    return None
 
 VAT_RATES = {
     'restaurant': 0.17,
@@ -137,6 +162,73 @@ def get_expenses(
 
 class ExpenseStatusUpdate(BaseModel):
     status: str
+
+
+@router.get("/chart")
+def get_expense_chart(
+    grouping: str = "monthly",
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    categories: Optional[str] = None,
+):
+    if grouping not in ("weekly", "monthly", "quarterly", "yearly"):
+        raise HTTPException(status_code=400, detail="grouping must be weekly|monthly|quarterly|yearly")
+
+    cat_list = [c.strip() for c in categories.split(",") if c.strip()] if categories else []
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    where_clauses = ["date IS NOT NULL", "date != ''"]
+    params: list = []
+    if date_from:
+        where_clauses.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_clauses.append("date <= ?")
+        params.append(date_to)
+    if cat_list:
+        placeholders = ",".join("?" * len(cat_list))
+        where_clauses.append(f"category IN ({placeholders})")
+        params.extend(cat_list)
+
+    where_sql = " AND ".join(where_clauses)
+    cur.execute(
+        f"SELECT date, category, amount FROM expenses WHERE {where_sql}",
+        params,
+    )
+
+    totals: dict = {}
+    labels_set: set = set()
+    categories_set: set = set()
+
+    for row in cur.fetchall():
+        label = _period_label(row["date"], grouping)
+        if label is None:
+            continue
+        cat = row["category"] or "other"
+        amount = float(row["amount"] or 0.0)
+        labels_set.add(label)
+        categories_set.add(cat)
+        key = (label, cat)
+        totals[key] = totals.get(key, 0.0) + amount
+
+    conn.close()
+
+    labels = sorted(labels_set)
+    cats_sorted = sorted(categories_set)
+
+    datasets: dict = {cat: [0.0] * len(labels) for cat in cats_sorted}
+    label_index = {label: i for i, label in enumerate(labels)}
+    for (label, cat), total in totals.items():
+        datasets[cat][label_index[label]] = round(total, 2)
+
+    return {
+        "labels": labels,
+        "categories": cats_sorted,
+        "datasets": datasets,
+        "grouping": grouping,
+    }
 
 
 @router.put("/{expense_id}/status")

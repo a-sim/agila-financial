@@ -168,6 +168,13 @@ def parse_filename(filename):
     except (ValueError, IndexError):
         return None
 
+    # Guard: Agila started April 2025. Any date before that from filename is likely a misread.
+    if date_iso < "2025-04-01":
+        if year in ("2022", "2023"):
+            date_iso = "2026" + date_iso[4:]
+        elif year == "2024":
+            date_iso = "2025" + date_iso[4:]
+
     # Try to extract amount from the end (e.g., 37EUR, 22EUR)
     amount = None
     currency = "EUR"

@@ -43,6 +43,12 @@ h1{font-size:16px;font-weight:600;padding:16px 0 12px;border-bottom:1px solid va
 .filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .filter-sel{padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px}
 .chart-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px}
+.chart-wrap-lg{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;height:520px;position:relative}
+.chart-wrap-lg canvas{position:absolute;inset:12px;width:calc(100% - 24px)!important;height:calc(100% - 24px)!important;max-height:none!important}
+.exp-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end;margin-bottom:10px}
+.exp-filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.exp-filters input,.exp-filters select{padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;width:100%;min-width:0}
+.exp-filters .search-cell{grid-column:1/-1}
 .inv-table{width:100%;border-collapse:collapse}
 .inv-table th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--border)}
 .inv-table td{padding:9px 10px;font-size:13px;border-bottom:1px solid #1e2130}
@@ -70,6 +76,19 @@ h1{font-size:16px;font-weight:600;padding:16px 0 12px;border-bottom:1px solid va
 .cat-table tr:last-child td{border-bottom:none}
 .tab-nav{display:none}
 .loading{text-align:center;padding:40px;color:var(--muted)}
+@media (max-width:480px){
+  .app{padding:0 8px 80px}
+  h1{font-size:15px;padding:14px 0 10px}
+  .kpi-grid{grid-template-columns:repeat(2,1fr);gap:8px}
+  .card{padding:12px}
+  .value{font-size:18px}
+  .chart-wrap-lg{height:360px;padding:8px}
+  .chart-wrap-lg canvas{inset:8px;width:calc(100% - 16px)!important;height:calc(100% - 16px)!important}
+  .exp-filters{grid-template-columns:1fr 1fr}
+  .exp-filters .search-cell{grid-column:1/-1}
+  .nav button{padding:8px 10px;font-size:12px}
+  .inv-table th,.inv-table td,.cat-table th,.cat-table td{padding:6px 6px;font-size:12px}
+}
 .sync-btn{display:block;width:100%;padding:10px;margin-bottom:12px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
 .sync-btn:disabled{opacity:.6;cursor:default}
 .sync-btn{padding:8px 16px;border-radius:8px;border:1px solid var(--accent);background:rgba(59,130,246,.1);color:var(--accent);font-size:12px;font-weight:500;cursor:pointer;margin-bottom:12px}
@@ -288,35 +307,17 @@ async function loadExpenses() {
       '<td class="amount" style="color:' + nonRecColor + '">EUR ' + eur(c.non_deductible||0) + '</td></tr>';
   }).join("");
 
-  // Distinct categories and periods from the full dataset
+  // Distinct categories from the full dataset
   var catSet = {};
-  var periodSet = {};
-  expenses.forEach(function(e){
-    if (e.category) catSet[e.category] = true;
-    if (e.date && e.date.length >= 7) {
-      var y = parseInt(e.date.slice(0,4));
-      var m = parseInt(e.date.slice(5,7));
-      if (!isNaN(y) && !isNaN(m)) {
-        periodSet["Q" + Math.ceil(m/3) + " " + y] = true;
-      }
-    }
-  });
+  expenses.forEach(function(e){ if (e.category) catSet[e.category] = true; });
   var catList = Object.keys(catSet).sort();
-  var periodList = Object.keys(periodSet).sort(function(a,b){
-    var ya=parseInt(a.split(' ')[1]), yb=parseInt(b.split(' ')[1]);
-    if (ya!==yb) return yb-ya;
-    return ['Q4','Q3','Q2','Q1'].indexOf(a.split(' ')[0])-['Q4','Q3','Q2','Q1'].indexOf(b.split(' ')[0]);
-  });
-
-  var catPillsHtml = '<button class="filter-btn active" onclick="setExpCat(\'\', this)">All</button>' +
-    catList.map(function(c){
-      return '<button class="filter-btn" onclick="setExpCat(\''+h(c)+'\', this)">'+h(c)+'</button>';
-    }).join('');
-
-  var periodOpts = '<option value="">All Periods</option>' +
-    periodList.map(function(p){return '<option value="'+h(p)+'">'+h(p)+'</option>'}).join('');
 
   var qMonths = 1; // partial quarter
+
+  var stackCatPills = catList.map(function(c){
+    return '<button class="filter-btn stack-cat-pill" data-cat="'+h(c)+'" onclick="toggleStackCat(this)">'+h(c)+'</button>';
+  }).join('');
+
   setHTML(el,
     '<div class="kpi-grid" style="margin-bottom:12px">' +
       '<div class="card"><h3>Total Expenses</h3><div class="value">EUR ' + eur(qTotal) + '</div><div class="sub">' + h(curQ) + ' ' + curYear + '</div></div>' +
@@ -325,28 +326,45 @@ async function loadExpenses() {
       '<div class="card"><h3>VAT Recoverable</h3><div class="value positive">EUR ' + eur(vat.current_quarter?vat.current_quarter.input_vat:0) + '</div><div class="sub">EU refund pending: EUR ' + eur(vat.eu_refund_pending_total||0) + '</div></div>' +
     '</div>' +
 
+    '<div class="section-title">Filters</div>' +
+    '<div class="exp-filters">' +
+      '<label>From<input type="date" id="expDateFrom" onchange="applyExpFilters()"></label>' +
+      '<label>To<input type="date" id="expDateTo" onchange="applyExpFilters()"></label>' +
+      '<label>Quick range<select id="expQuickRange" onchange="setExpQuickRange(this.value)">' +
+        '<option value="">Custom</option>' +
+        '<option value="30">Last 30 days</option>' +
+        '<option value="90">Last 90 days</option>' +
+        '<option value="ytd">Year to date</option>' +
+        '<option value="thisq">This quarter</option>' +
+        '<option value="lastq">Last quarter</option>' +
+        '<option value="all">All time</option>' +
+      '</select></label>' +
+      '<label class="search-cell">Search<input id="expSearch" oninput="applyExpFilters()" placeholder="Vendor, notes, description, email..."></label>' +
+    '</div>' +
+    '<div class="filter-bar" id="expCatPills">' +
+      '<button class="filter-btn active" onclick="clearExpCats(this)">All</button>' +
+      stackCatPills +
+      '<span style="width:1px;height:20px;background:var(--border);margin:0 4px;flex-shrink:0"></span>' +
+      '<button class="filter-btn stack-grp-btn" data-grp="weekly" onclick="setStackGrouping(\'weekly\')">Weekly</button>' +
+      '<button class="filter-btn stack-grp-btn active" data-grp="monthly" onclick="setStackGrouping(\'monthly\')">Monthly</button>' +
+      '<button class="filter-btn stack-grp-btn" data-grp="quarterly" onclick="setStackGrouping(\'quarterly\')">Quarterly</button>' +
+      '<button class="filter-btn stack-grp-btn" data-grp="yearly" onclick="setStackGrouping(\'yearly\')">Yearly</button>' +
+    '</div>' +
+
+    '<div class="section-title">Expenses by Category over Time</div>' +
+    '<div class="chart-wrap-lg"><canvas id="expStackChart"></canvas></div>' +
+
     '<div class="filter-bar">' +
       '<select class="filter-sel" id="expViewSel" onchange="setExpView(this.value)">' +
         '<option value="table">Table</option>' +
         '<option value="chart">Bar Chart</option>' +
         '<option value="category">By Category</option>' +
       '</select>' +
-      '<select class="filter-sel" id="expCatFilt" onchange="renderExpChart()">' +
-        '<option value="">All Categories</option>' +
-        cats.map(function(c){return '<option value="'+h(c.category||'')+'">'+h(c.category||'')+'</option>'}).join('') +
-      '</select>' +
     '</div>' +
 
     '<div class="chart-wrap" id="expChartWrap" style="display:none"><canvas id="expChart"></canvas></div>' +
 
     '<div id="expTableWrap">' +
-      '<div style="margin-bottom:8px">' +
-        '<input id="expSearch" oninput="renderExpTable()" placeholder="Search vendor, notes, description, email..." style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">' +
-      '</div>' +
-      '<div class="filter-bar" id="expCatPills">' + catPillsHtml + '</div>' +
-      '<div class="filter-bar">' +
-        '<select class="filter-sel" id="expPeriodSel" onchange="renderExpTable()">' + periodOpts + '</select>' +
-      '</div>' +
       '<div id="expCountLine" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>' +
       '<div style="overflow-x:auto">' +
       '<table class="cat-table" id="expTable"><thead><tr>' +
@@ -372,8 +390,177 @@ async function loadExpenses() {
 
   // Build bar chart data: by category (net + VAT stacked)
   window._expData = {cats: cats, expenses: expenses};
-  window._expFilt = {cat:"", period:""};
+  window._expFilt = {dateFrom:"", dateTo:"", selectedCats:[], search:""};
+  window._stackState = {grouping:"monthly"};
   renderExpTable();
+  renderStackChart();
+}
+
+function _getExpFilt() {
+  return window._expFilt || {dateFrom:"", dateTo:"", selectedCats:[], search:""};
+}
+
+function applyExpFilters() {
+  var f = _getExpFilt();
+  var dfEl = document.getElementById('expDateFrom');
+  var dtEl = document.getElementById('expDateTo');
+  var sEl = document.getElementById('expSearch');
+  f.dateFrom = dfEl ? dfEl.value : "";
+  f.dateTo = dtEl ? dtEl.value : "";
+  f.search = sEl ? sEl.value : "";
+  window._expFilt = f;
+  var qr = document.getElementById('expQuickRange');
+  if (qr) qr.value = "";
+  renderExpTable();
+  renderStackChart();
+  renderExpChart();
+}
+
+function setExpQuickRange(val) {
+  if (!val) return;
+  var today = new Date();
+  var toStr = today.toISOString().slice(0,10);
+  var fromStr = "";
+  if (val === "30" || val === "90") {
+    var d = new Date(today);
+    d.setDate(d.getDate() - parseInt(val,10));
+    fromStr = d.toISOString().slice(0,10);
+  } else if (val === "ytd") {
+    fromStr = today.getFullYear() + "-01-01";
+  } else if (val === "thisq") {
+    var q = Math.floor(today.getMonth()/3);
+    var m = q*3 + 1;
+    fromStr = today.getFullYear() + "-" + String(m).padStart(2,'0') + "-01";
+  } else if (val === "lastq") {
+    var curQ = Math.floor(today.getMonth()/3);
+    var lastQ = curQ - 1;
+    var y = today.getFullYear();
+    if (lastQ < 0) { lastQ = 3; y -= 1; }
+    var sm = lastQ*3 + 1;
+    var em = lastQ*3 + 3;
+    fromStr = y + "-" + String(sm).padStart(2,'0') + "-01";
+    var endDate = new Date(y, em, 0);
+    toStr = endDate.toISOString().slice(0,10);
+  } else if (val === "all") {
+    fromStr = "";
+    toStr = "";
+  }
+  var dfEl = document.getElementById('expDateFrom');
+  var dtEl = document.getElementById('expDateTo');
+  if (dfEl) dfEl.value = fromStr;
+  if (dtEl) dtEl.value = toStr;
+  var f = _getExpFilt();
+  f.dateFrom = fromStr;
+  f.dateTo = toStr;
+  window._expFilt = f;
+  renderExpTable();
+  renderStackChart();
+  renderExpChart();
+}
+
+function clearExpCats(btn) {
+  var f = _getExpFilt();
+  f.selectedCats = [];
+  window._expFilt = f;
+  document.querySelectorAll('#expCatPills .stack-cat-pill').forEach(function(b){b.classList.remove('active')});
+  if (btn) btn.classList.add('active');
+  renderExpTable();
+  renderStackChart();
+  renderExpChart();
+}
+
+var STACK_PALETTE = [
+  "#3b82f6","#ef4444","#22c55e","#f59e0b","#a855f7",
+  "#14b8a6","#f97316","#ec4899","#6366f1","#84cc16",
+  "#06b6d4","#eab308","#64748b","#dc2626","#0ea5e9"
+];
+
+function _stackColor(i) { return STACK_PALETTE[i % STACK_PALETTE.length]; }
+
+function setStackGrouping(grp) {
+  if (!window._stackState) window._stackState = {grouping:"monthly"};
+  window._stackState.grouping = grp;
+  document.querySelectorAll('.stack-grp-btn').forEach(function(b){
+    b.classList.toggle('active', b.getAttribute('data-grp') === grp);
+  });
+  renderStackChart();
+}
+
+function toggleStackCat(btn) {
+  var f = _getExpFilt();
+  var cat = btn.getAttribute('data-cat');
+  var sel = f.selectedCats || [];
+  var idx = sel.indexOf(cat);
+  if (idx >= 0) sel.splice(idx, 1); else sel.push(cat);
+  f.selectedCats = sel;
+  window._expFilt = f;
+  btn.classList.toggle('active', sel.indexOf(cat) >= 0);
+  var allBtn = document.querySelector('#expCatPills .filter-btn:first-child');
+  if (allBtn) allBtn.classList.toggle('active', sel.length === 0);
+  renderExpTable();
+  renderStackChart();
+  renderExpChart();
+}
+
+async function renderStackChart() {
+  var st = window._stackState || {grouping:"monthly"};
+  var f = _getExpFilt();
+  var params = new URLSearchParams();
+  params.set('grouping', st.grouping);
+  if (f.dateFrom) params.set('date_from', f.dateFrom);
+  if (f.dateTo) params.set('date_to', f.dateTo);
+  if (f.selectedCats && f.selectedCats.length) params.set('categories', f.selectedCats.join(','));
+
+  var res;
+  try {
+    res = await fetch('/api/expenses/chart?' + params.toString()).then(function(r){return r.json()});
+  } catch(e) { return; }
+
+  var canvas = document.getElementById('expStackChart');
+  if (!canvas) return;
+  if (window._expStackChart && window._expStackChart.destroy) window._expStackChart.destroy();
+
+  var labels = res.labels || [];
+  var cats = res.categories || [];
+  var datasets = cats.map(function(c, i){
+    return {
+      label: c,
+      data: (res.datasets && res.datasets[c]) || [],
+      backgroundColor: _stackColor(i),
+      borderColor: _stackColor(i),
+      borderWidth: 0,
+    };
+  });
+
+  window._expStackChart = new Chart(canvas, {
+    type: "bar",
+    data: { labels: labels, datasets: datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { color: "#e5e7eb", font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              var v = ctx.parsed.y || 0;
+              return ctx.dataset.label + ": EUR " + v.toLocaleString("de", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            }
+          }
+        }
+      },
+      scales: {
+        x: { stacked: true, ticks: { color: "#9ca3af", font: { size: 11 } }, grid: { color: "#2e3347" } },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: { color: "#9ca3af", callback: function(v){ return "EUR " + v.toLocaleString("de"); } },
+          grid: { color: "#2e3347" }
+        }
+      }
+    }
+  });
 }
 
 function setExpView(view) {
@@ -393,32 +580,18 @@ function setExpView(view) {
   }
 }
 
-function setExpCat(cat, btn) {
-  window._expFilt = window._expFilt || {cat:"", period:""};
-  window._expFilt.cat = cat;
-  document.querySelectorAll('#expCatPills .filter-btn').forEach(function(b){b.classList.remove('active')});
-  if (btn) btn.classList.add('active');
-  renderExpTable();
-}
-
 function renderExpTable() {
   var d = window._expData;
   if (!d) return;
-  var filt = window._expFilt || {cat:"", period:""};
-  var searchEl = document.getElementById("expSearch");
-  var periodEl = document.getElementById("expPeriodSel");
-  var q = searchEl ? searchEl.value.toLowerCase() : "";
-  var period = periodEl ? periodEl.value : "";
+  var filt = _getExpFilt();
+  var q = (filt.search || "").toLowerCase();
+  var cats = filt.selectedCats || [];
+  var df = filt.dateFrom || "";
+  var dt = filt.dateTo || "";
   var rows = d.expenses.filter(function(e){
-    if (filt.cat && e.category !== filt.cat) return false;
-    if (period && e.date && e.date.length >= 7) {
-      var y = parseInt(e.date.slice(0,4));
-      var m = parseInt(e.date.slice(5,7));
-      var ep = "Q" + Math.ceil(m/3) + " " + y;
-      if (ep !== period) return false;
-    } else if (period) {
-      return false;
-    }
+    if (cats.length && cats.indexOf(e.category) < 0) return false;
+    if (df && (!e.date || e.date < df)) return false;
+    if (dt && (!e.date || e.date > dt)) return false;
     if (q) {
       var hay = ((e.vendor||'') + ' ' + (e.notes||'') + ' ' + (e.description||'') + ' ' + (e.email_subject||'') + ' ' + (e.category||'')).toLowerCase();
       if (hay.indexOf(q) < 0) return false;
@@ -466,11 +639,15 @@ function renderExpTable() {
 function renderExpChart() {
   var d = window._expData;
   if (!d) return;
-  var cats = d.cats;
-  var catFilter = document.getElementById("expCatFilt") ? document.getElementById("expCatFilt").value : "";
-  var filtered = catFilter ? cats.filter(function(c){return c.category === catFilter}) : cats;
-
   var canvas = document.getElementById("expChart");
+  if (!canvas) return;
+  var wrap = document.getElementById("expChartWrap");
+  if (wrap && wrap.style.display === "none") return;
+  var filt = _getExpFilt();
+  var cats = d.cats;
+  var selectedCats = filt.selectedCats || [];
+  var filtered = selectedCats.length ? cats.filter(function(c){return selectedCats.indexOf(c.category) >= 0}) : cats;
+
   if (window._expChart && window._expChart.destroy) window._expChart.destroy();
   window._expChart = new Chart(canvas, {
     type:"bar",
@@ -639,7 +816,7 @@ async function loadVAT() {
 }
 
 var reconCache = null;
-var reconFilt = {status:"all",bank:"all",period:"all"};
+var reconFilt = {status:"all",bank:"all",period:"all",search:"",grouping:"quarterly"};
 
 function sc(s) {
   if(!s) return "#6b7280";
@@ -664,6 +841,44 @@ function sbg(s) {
   return "rgba(107,114,128,.1)";
 }
 
+function reconAction(t) {
+  var s = t.match_status||"";
+  var desc = (t.description||"").toLowerCase();
+  var amt = Math.abs(t.amount||0);
+  var guidance = [];
+  if (s.includes("MISSING - HIGH")) {
+    guidance.push('<span style="color:var(--red);font-weight:600">\u26A0 HIGH PRIORITY</span>');
+    if (amt > 1000) guidance.push('Large amount. Check email for invoice or request from vendor.');
+    if (desc.includes('salary') || desc.includes('payroll')) guidance.push('Payroll/salary: mark as NO RECEIPT NEEDED.');
+    if (desc.includes('transfer') || desc.includes('virement')) guidance.push('Internal transfer. Mark as NO RECEIPT NEEDED.');
+    if (desc.includes('tax') || desc.includes('vat') || desc.includes('tva')) guidance.push('Tax payment. Get statement from tax authority portal.');
+    if (desc.includes('social') || desc.includes('rsz') || desc.includes('cnss')) guidance.push('Social security. Check Securex portal for statement.');
+    if (!guidance.length || guidance.length === 1) guidance.push('Search email for vendor invoice. If not found, request from vendor.');
+  } else if (s.includes("MISSING - MEDIUM")) {
+    guidance.push('<span style="color:var(--orange);font-weight:600">Action needed</span>');
+    if (desc.includes('restaurant') || desc.includes('cafe')) guidance.push('Restaurant. Send receipt via Telegram bot @agila_receipts_bot.');
+    if (desc.includes('hotel') || desc.includes('booking')) guidance.push('Hotel. Check email for confirmation or send receipt via Telegram bot.');
+    if (desc.includes('amazon')) guidance.push('Amazon purchase. Download invoice from Amazon Orders page.');
+    if (!guidance.length || guidance.length === 1) guidance.push('Look for invoice in email or request from vendor.');
+  } else if (s.includes("MISSING - LOW")) {
+    guidance.push('<span style="color:var(--yellow);font-weight:600">Low priority</span>');
+    guidance.push('Small amount. Document reason if receipt unavailable.');
+  } else if (s.includes("PENDING")) {
+    guidance.push('<span style="color:var(--yellow);font-weight:600">Pending review</span>');
+    guidance.push('Possible match found. Verify the linked expense matches this transaction.');
+  } else if (s.includes("TESLA")) {
+    guidance.push('<span style="color:var(--orange);font-weight:600">Tesla charging</span>');
+    guidance.push('Download monthly statement from Tesla account or app.');
+  } else if (s.includes("NO RECEIPT")) {
+    guidance.push('<span style="color:var(--accent);font-weight:600">No receipt needed</span>');
+    guidance.push('Internal transfer, salary, or non-expense item. No action required.');
+  } else if (s.includes("MATCHED")) {
+    guidance.push('<span style="color:var(--green);font-weight:600">\u2713 Matched</span>');
+    guidance.push('Receipt on file. No action needed.');
+  }
+  return guidance;
+}
+
 async function loadBank() {
   if (reconCache) { renderRecon(); return; }
   reconCache = await fetch("/api/reconciliation").then(function(r){return r.json()});
@@ -682,8 +897,10 @@ function renderRecon() {
   var byS = {};
   txns.forEach(function(t){var k=t.match_status||"?";byS[k]=(byS[k]||0)+1});
   var mH=byS["MISSING - HIGH"]||0, mM=byS["MISSING - MEDIUM"]||0, mL=byS["MISSING - LOW"]||0;
+  var pendingC=byS["PENDING"]||0;
+  var teslaC=byS["TESLA - NEED MONTHLY STMT"]||s.tesla||0;
+  var noRcpt=byS["NO RECEIPT NEEDED"]||s.no_receipt_needed||0;
 
-  // Build dynamic period options from by_period keys (already unified across tables)
   var periodKeys = Object.keys(d.by_period||{}).filter(function(p){return p && p!=="?"}).sort(function(a,b){
     var ya=parseInt(a.split(' ')[1]), yb=parseInt(b.split(' ')[1]);
     var qa=a.split(' ')[0], qb=b.split(' ')[0];
@@ -692,60 +909,178 @@ function renderRecon() {
   });
   var periodOpts = periodKeys.map(function(p){return '<option value="'+h(p)+'">'+h(p)+'</option>'}).join('');
 
-  // Build dynamic bank options from by_bank keys
   var bankKeys = Object.keys(d.by_bank||{}).filter(function(b){return b && b!=="?"}).sort();
   var bankOpts = bankKeys.map(function(b){return '<option value="'+h(b)+'">'+h(b)+'</option>'}).join('');
 
+  var missingHigh = txns.filter(function(t){return (t.match_status||"").includes("MISSING - HIGH")});
+  var missingMed = txns.filter(function(t){return (t.match_status||"").includes("MISSING - MEDIUM")});
+  var pendingTx = txns.filter(function(t){return (t.match_status||"").includes("PENDING")});
+  var teslaTx = txns.filter(function(t){return (t.match_status||"").includes("TESLA")});
+
+  var actionItems = [];
+  if (missingHigh.length) {
+    var highTotal = missingHigh.reduce(function(a,t){return a+Math.abs(t.amount||0)},0);
+    actionItems.push('<div class="card" style="border-left:3px solid var(--red)"><h3>\u26A0 Missing Receipts (High Priority)</h3><div class="value negative">'+missingHigh.length+' items</div><div class="sub">EUR '+eur(highTotal)+' total. Need receipts for VAT and audit compliance.</div></div>');
+  }
+  if (missingMed.length) {
+    var medTotal = missingMed.reduce(function(a,t){return a+Math.abs(t.amount||0)},0);
+    actionItems.push('<div class="card" style="border-left:3px solid var(--orange)"><h3>Missing Receipts (Medium)</h3><div class="value warning">'+missingMed.length+' items</div><div class="sub">EUR '+eur(medTotal)+' total. Check email or request from vendor.</div></div>');
+  }
+  if (pendingTx.length) {
+    actionItems.push('<div class="card" style="border-left:3px solid var(--yellow)"><h3>Pending Review</h3><div class="value warning">'+pendingTx.length+' items</div><div class="sub">Possible matches found. Verify and confirm or reject.</div></div>');
+  }
+  if (teslaTx.length) {
+    actionItems.push('<div class="card" style="border-left:3px solid var(--orange)"><h3>Tesla Charging</h3><div class="value warning">'+teslaTx.length+' items</div><div class="sub">Download monthly statements from Tesla app.</div></div>');
+  }
+
   setHTML("tab-bank",
     '<div class="kpi-grid">' +
-      '<div class="card"><h3>Match Rate</h3><div class="value '+mc+'">'+pct.toFixed(0)+'%</div><div class="sub">'+matched+'/'+total+'</div></div>' +
-      '<div class="card"><h3>Unmatched</h3><div class="value '+(missing>0?"negative":"positive")+'">'+missing+'</div><div class="sub">needs review</div></div>' +
-      '<div class="card"><h3>Missing</h3><div class="value '+(mH>0?"negative":"positive")+'">'+mH+' high</div><div class="sub">'+mM+' med, '+mL+' low</div></div>' +
-      '<div class="card"><h3>VAT Deadline</h3><div class="value warning">'+(d.vat?d.vat.days_until_deadline||64:64)+'d</div><div class="sub">Q1 15 Jun</div></div>' +
+      '<div class="card"><h3>Match Rate</h3><div class="value '+mc+'">'+pct.toFixed(0)+'%</div><div class="sub">'+matched+'/'+total+' matched</div></div>' +
+      '<div class="card"><h3>Action Needed</h3><div class="value '+(missing>0?"negative":"positive")+'">'+(mH+mM+pendingC+teslaC)+'</div><div class="sub">'+mH+' high, '+mM+' med, '+pendingC+' pending, '+teslaC+' tesla</div></div>' +
+      '<div class="card"><h3>Low Priority</h3><div class="value warning">'+(mL+noRcpt)+'</div><div class="sub">'+mL+' low, '+noRcpt+' no receipt needed</div></div>' +
+      '<div class="card"><h3>Matched</h3><div class="value positive">'+matched+'</div><div class="sub">fully reconciled</div></div>' +
     '</div>' +
-    '<div class="filter-bar">' +
-      '<button class="filter-btn active" id="fAll" onclick="setF(\'status\',\'all\',this)">All</button>' +
-      '<button class="filter-btn" id="fMatched" onclick="setF(\'status\',\'matched\',this)">Matched</button>' +
-      '<button class="filter-btn" id="fMissing" onclick="setF(\'status\',\'missing\',this)">Missing</button>' +
-      '<button class="filter-btn" id="fPending" onclick="setF(\'status\',\'pending\',this)">Pending</button>' +
+    (actionItems.length ? '<div class="section-title">\u26A1 Action Required</div><div class="kpi-grid" style="grid-template-columns:1fr">'+actionItems.join('')+ '</div>' : '') +
+    '<div class="section-title">Status by Period</div>' +
+    '<div class="filter-bar" style="margin-bottom:8px">' +
+      '<button class="filter-btn active" data-rgrp="quarterly" onclick="setReconGroup(this)">Quarterly</button>' +
+      '<button class="filter-btn" data-rgrp="monthly" onclick="setReconGroup(this)">Monthly</button>' +
     '</div>' +
-    '<div class="filter-bar">' +
-      '<select class="filter-sel" onchange="setF(\'bank\',this.value)"><option value="all">All Banks</option>'+bankOpts+'</select>' +
-      '<select class="filter-sel" id="periodSel" onchange="setF(\'period\',this.value)"><option value="all">All Periods</option>'+periodOpts+'</select>' +
+    '<div class="chart-wrap" style="height:320px"><canvas id="reconChart"></canvas></div>' +
+    '<div class="section-title">Filters</div>' +
+    '<div class="exp-filters">' +
+      '<label>Bank<select class="filter-sel" id="reconBank" onchange="setReconFilt()"><option value="all">All Banks</option>'+bankOpts+'</select></label>' +
+      '<label>Period<select class="filter-sel" id="reconPeriod" onchange="setReconFilt()"><option value="all">All Periods</option>'+periodOpts+'</select></label>' +
+      '<label class="search-cell">Search<input id="reconSearch" oninput="setReconFilt()" placeholder="Description, vendor, notes..."></label>' +
     '</div>' +
+    '<div class="filter-bar" id="reconStatusPills">' +
+      '<button class="filter-btn active" data-status="all" onclick="setReconStatus(this)">All ('+total+')</button>' +
+      '<button class="filter-btn" data-status="missing" onclick="setReconStatus(this)" style="border-color:var(--red)">\u26A0 Missing ('+(mH+mM+mL)+')</button>' +
+      '<button class="filter-btn" data-status="pending" onclick="setReconStatus(this)" style="border-color:var(--yellow)">\u23F3 Pending ('+pendingC+')</button>' +
+      '<button class="filter-btn" data-status="tesla" onclick="setReconStatus(this)" style="border-color:var(--orange)">\u26A1 Tesla ('+teslaC+')</button>' +
+      '<button class="filter-btn" data-status="matched" onclick="setReconStatus(this)" style="border-color:var(--green)">\u2713 Matched ('+matched+')</button>' +
+      '<button class="filter-btn" data-status="noreceipt" onclick="setReconStatus(this)" style="border-color:var(--accent)">No Receipt ('+noRcpt+')</button>' +
+    '</div>' +
+    '<div id="reconCountLine" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>' +
     '<div id="recon-list"></div>');
-  renderTxns(txns);
-}
 
-function setF(type, value, btn) {
-  reconFilt[type] = value;
-  if (type==='status') {
-    document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active')});
-    if(btn) btn.classList.add('active');
+  // Stacked bar chart by period
+  var chartCanvas = document.getElementById('reconChart');
+  if (chartCanvas) {
+    var grp = reconFilt.grouping || 'quarterly';
+    // Group transactions by period
+    var periodMap = {};
+    txns.forEach(function(t) {
+      var dt = t.date || '';
+      var key;
+      if (grp === 'monthly') {
+        key = dt.substring(0,7) || '?'; // YYYY-MM
+      } else {
+        var y = dt.substring(0,4), m = parseInt(dt.substring(5,7)||'0');
+        key = y && m ? y + ' Q' + Math.ceil(m/3) : '?';
+      }
+      if (!periodMap[key]) periodMap[key] = {matched:0, missingH:0, missingM:0, missingL:0, pending:0, tesla:0, noreceipt:0};
+      var ms = t.match_status || '';
+      if (ms.includes('MATCHED')) periodMap[key].matched++;
+      else if (ms.includes('MISSING - HIGH')) periodMap[key].missingH++;
+      else if (ms.includes('MISSING - MEDIUM')) periodMap[key].missingM++;
+      else if (ms.includes('MISSING - LOW')) periodMap[key].missingL++;
+      else if (ms.includes('PENDING')) periodMap[key].pending++;
+      else if (ms.includes('TESLA')) periodMap[key].tesla++;
+      else if (ms.includes('NO RECEIPT')) periodMap[key].noreceipt++;
+    });
+    var labels = Object.keys(periodMap).sort();
+    var datasets = [
+      {label:'Matched', data:labels.map(function(l){return periodMap[l].matched}), backgroundColor:'#22c55e'},
+      {label:'Missing High', data:labels.map(function(l){return periodMap[l].missingH}), backgroundColor:'#ef4444'},
+      {label:'Missing Med', data:labels.map(function(l){return periodMap[l].missingM}), backgroundColor:'#f97316'},
+      {label:'Missing Low', data:labels.map(function(l){return periodMap[l].missingL}), backgroundColor:'#f59e0b'},
+      {label:'Pending', data:labels.map(function(l){return periodMap[l].pending}), backgroundColor:'#eab308'},
+      {label:'Tesla', data:labels.map(function(l){return periodMap[l].tesla}), backgroundColor:'#8b5cf6'},
+      {label:'No Receipt', data:labels.map(function(l){return periodMap[l].noreceipt}), backgroundColor:'#3b82f6'},
+    ].filter(function(ds){return ds.data.some(function(v){return v>0})});
+
+    if (window._reconChart) window._reconChart.destroy();
+    window._reconChart = new Chart(chartCanvas, {
+      type:'bar',
+      data:{labels:labels, datasets:datasets},
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        scales:{
+          x:{stacked:true, ticks:{color:'#94a3b8', font:{size:11}}, grid:{display:false}},
+          y:{stacked:true, ticks:{color:'#94a3b8', stepSize:5}, grid:{color:'#1e293b'}}
+        },
+        plugins:{
+          legend:{position:'bottom', labels:{color:'#94a3b8', padding:8, font:{size:10}, boxWidth:12}},
+          tooltip:{mode:'index', intersect:false}
+        }
+      }
+    });
   }
-  renderTxns(reconCache.transactions||[]);
+
+  renderReconTxns();
 }
 
-function renderTxns(txns) {
+function setReconGroup(btn) {
+  document.querySelectorAll('[data-rgrp]').forEach(function(b){b.classList.remove('active')});
+  btn.classList.add('active');
+  reconFilt.grouping = btn.getAttribute('data-rgrp');
+  renderRecon();
+}
+
+function setReconStatus(btn) {
+  document.querySelectorAll('#reconStatusPills .filter-btn').forEach(function(b){b.classList.remove('active')});
+  btn.classList.add('active');
+  reconFilt.status = btn.getAttribute('data-status');
+  renderReconTxns();
+}
+
+function setReconFilt() {
+  var bEl = document.getElementById('reconBank');
+  var pEl = document.getElementById('reconPeriod');
+  var sEl = document.getElementById('reconSearch');
+  reconFilt.bank = bEl ? bEl.value : 'all';
+  reconFilt.period = pEl ? pEl.value : 'all';
+  reconFilt.search = sEl ? sEl.value.toLowerCase() : '';
+  renderReconTxns();
+}
+
+function renderReconTxns() {
+  var txns = reconCache ? reconCache.transactions||[] : [];
   var f = reconFilt;
   var filtered = txns.filter(function(t) {
     var ms = t.match_status||"";
     if (f.status==='matched' && !ms.includes('MATCHED')) return false;
     if (f.status==='missing' && !ms.includes('MISSING')) return false;
     if (f.status==='pending' && !ms.includes('PENDING')) return false;
+    if (f.status==='tesla' && !ms.includes('TESLA')) return false;
+    if (f.status==='noreceipt' && ms !== 'NO RECEIPT NEEDED') return false;
     if (f.bank!=='all' && t.bank!==f.bank) return false;
     if (f.period!=='all' && t.period!==f.period) return false;
+    if (f.search) {
+      var hay = ((t.description||'') + ' ' + (t.notes||'') + ' ' + (t.bank||'')).toLowerCase();
+      if (hay.indexOf(f.search) < 0) return false;
+    }
     return true;
   });
+
   var list = document.getElementById("recon-list");
-  if (!filtered.length) { list.textContent = "No transactions match filters"; return; }
+  if (!list) return;
+
+  var totalAmt = filtered.reduce(function(a,t){return a + Math.abs(t.amount||0)},0);
+  var countLine = document.getElementById('reconCountLine');
+  if (countLine) countLine.textContent = 'Showing ' + filtered.length + ' transaction' + (filtered.length===1?'':'s') + ' (EUR ' + eur(totalAmt) + ' total)';
+
+  if (!filtered.length) { setHTML(list, '<div class="empty-state">No transactions match filters</div>'); return; }
   setHTML(list, filtered.map(function(t) {
     var amt = t.amount||0;
     var c = sc(t.match_status);
     var bg = sbg(t.match_status);
     var receipt = t.receipt_file && t.receipt_file!="-" ? h(t.receipt_file) : "";
-    var notes = h(t.notes||"No notes");
-    return '<div class="tx-row" onclick="toggleDetail(this)" style="border-left:3px solid '+c+';background:'+bg+'">' +
+    var actions = reconAction(t);
+    var actionHtml = actions.map(function(a){return '<div style="font-size:12px;line-height:1.6">'+a+'</div>'}).join('');
+    var notes = h(t.notes||"");
+    return '<div class="tx-row" onclick="toggleReconDetail(this)" style="border-left:3px solid '+c+';background:'+bg+'">' +
       '<div class="tx-main">' +
         '<div class="tx-left"><span class="dot" style="background:'+c+'"></span><span class="tx-date">'+h(t.date||"")+'</span><span class="tx-desc">'+h(t.description||"")+'</span></div>' +
         '<span class="tx-amount" style="color:'+(amt<0?"var(--red)":"var(--green)")+'">'+(amt<0?"-":"")+'EUR '+Math.abs(amt).toFixed(2)+'</span>' +
@@ -755,12 +1090,17 @@ function renderTxns(txns) {
         '<span class="bank-chip">'+h(t.bank||"")+'</span>' +
         (receipt ? '<span class="bank-chip">'+receipt+'</span>' : '') +
       '</div>' +
-      '<div class="tx-detail">'+notes+'<br><span style="font-size:10px">Period: '+h(t.period||"")+' | Bank: '+h(t.bank||"")+'</span></div>' +
+      '<div class="tx-detail" style="display:none">' +
+        (notes ? '<div style="margin-bottom:6px"><strong>Notes:</strong> '+notes+'</div>' : '') +
+        '<div style="margin-bottom:6px"><strong>Guidance:</strong></div>' +
+        actionHtml +
+        '<div style="margin-top:8px;font-size:10px;color:var(--muted)">Period: '+h(t.period||"")+' | Bank: '+h(t.bank||"")+' | Source: '+h(t.source_table||"")+'</div>' +
+      '</div>' +
     '</div>';
   }).join(""));
 }
 
-function toggleDetail(el) {
+function toggleReconDetail(el) {
   var d = el.querySelector(".tx-detail");
   d.style.display = d.style.display==="none"||!d.style.display?"block":"none";
 }
