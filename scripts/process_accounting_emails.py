@@ -64,11 +64,25 @@ ACCOUNTING_KW = {
     'declaration', 'déclaration', 'compliance', 'accounting',
     'subscription', 'abonnement', 'payment', 'pago', 'paiement',
     'order', 'pedido', 'commande', 'purchase', 'compra',
-    'd.ieteren', 'd''ieteren', 'everestcard', 'attc', 'fiscoges',
+    'd.ieteren', 'd''ieteren', 'attc', 'fiscoges',
     'odoo', 'revolut', 'sage', 'puigfontanals',
     'e-ticket', 'eticket', 'boarding pass',
     'your booking', 'we have everything for your trip',
     'your receipt', 'confirmación de viaje', 'reserva de viaje',
+}
+
+# Sender domains that may send non-accounting emails even though the domain
+# appears in ACCOUNTING_KW. These require email body/attachment content review.
+NEEDS_CONTENT_REVIEW_DOMAINS = {
+    'everestcard.com',   # Sends refund confirmations, account updates, etc.
+    'wallee.com',        # EverestCard rebranded
+}
+
+# Keywords in email body or subject that indicate this is NOT an invoice/receipt
+NON_ACCOUNTING_KW = {
+    'account closure', 'account access', 'login', 'password reset',
+    'rebranding', 'fee complaint', 'refund of €0', 'refund of 0.00',
+    'your request has been received', 'support ticket',
 }
 
 # Attachment-name keywords that override to include
@@ -109,13 +123,29 @@ CATEGORY_KEYWORDS = {
 # ── Token ─────────────────────────────────────────────────────────────────────
 
 def get_access_token() -> str:
+    """Read access token from MSAL cache. If the first API call gets 401,
+    the caller should try refreshing via mcporter."""
     with open(TOKEN_CACHE) as f:
         cache = json.load(f)
     at = cache.get('AccessToken', {})
     for key, val in at.items():
         if isinstance(val, dict) and 'secret' in val:
             return val['secret']
-    raise RuntimeError('No access token found')
+    raise RuntimeError('No access token found in cache')
+
+
+def refresh_token_via_mcporter() -> str:
+    """Force a token refresh by calling mcporter list_accounts, then re-read cache."""
+    try:
+        subprocess.run(
+            [str(MCPORTER), 'call', 'microsoft.list_accounts'],
+            capture_output=True, text=True, timeout=30,
+        )
+        # Re-read the cache after mcporter refreshes it
+        import time; time.sleep(1)
+        return get_access_token()
+    except Exception as e:
+        raise RuntimeError(f'Token refresh via mcporter failed: {e}')
 
 
 # ── Graph helpers ─────────────────────────────────────────────────────────────
@@ -195,11 +225,20 @@ def upload_to_onedrive(folder_id: str, filename: str, content: bytes,
             item_id = item.get('id', '')
             url = f'{GRAPH_BASE}/items/{item_id}/content'
             return graph_put(url, token, content, content_type)
-    except Exception:
-        pass
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code != 401:
+            raise
+        # 401 — try refreshing token
+        token = refresh_token_via_mcporter()
 
     url = f'{GRAPH_BASE}/items/{folder_id}:/{safe_name}:/content'
-    return graph_put(url, token, content, content_type)
+    try:
+        return graph_put(url, token, content, content_type)
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            token = refresh_token_via_mcporter()
+            return graph_put(url, token, content, content_type)
+        raise
 
 
 # ── mcporter helpers ──────────────────────────────────────────────────────────
@@ -236,7 +275,7 @@ def list_emails_with_attachments(limit: int = 50) -> list:
 def get_email_with_attachments(email_id: str) -> dict:
     return mcporter_call('get_email', {
         'account_id': ACCOUNT_ID, 'email_id': email_id,
-        'include_body': False, 'include_attachments': True,
+        'include_body': True, 'include_attachments': True,
     })
 
 
@@ -371,7 +410,8 @@ def extract_amount_from_pdf(pdf_path: Path) -> Optional[float]:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def is_accounting_email(sender_email: str, subject: str,
-                         attachment_names: List[str]) -> bool:
+                         attachment_names: List[str],
+                         body_text: str = '') -> bool:
     sender_domain = sender_email.split('@')[-1].lower() if sender_email else ''
     sub = subject.lower()
     combined = f'{sender_domain} {sub}'
@@ -382,6 +422,20 @@ def is_accounting_email(sender_email: str, subject: str,
 
     # Skip non-accounting subject lines
     if any(kw in sub for kw in SKIP_SUBJECT_KW):
+        return False
+
+    # Negative: non-accounting keywords in subject or body
+    text_to_check = f'{sub} {body_text.lower()}'
+    if any(kw in text_to_check for kw in NON_ACCOUNTING_KW):
+        return False
+
+    # Domains that need extra scrutiny: must have invoice/receipt in attachment name
+    if any(d in sender_domain for d in NEEDS_CONTENT_REVIEW_DOMAINS):
+        for att in attachment_names:
+            att_lower = att.lower()
+            if any(kw in att_lower for kw in ATT_INCLUDE_KW):
+                return True
+        # No attachment name matches invoice/receipt keywords → skip
         return False
 
     # Positive: accounting keywords
@@ -539,7 +593,7 @@ def process_accounting_emails(dry_run: bool = False, limit: int = 50, no_move: b
         sender_domain = sender_email.split('@')[-1].lower() if sender_email else ''
         received    = email.get('receivedDateTime', '')[:10]
 
-        # Fetch full email with attachments
+        # Fetch full email with attachments (include body for content review)
         try:
             full_email = get_email_with_attachments(email_id)
         except Exception as e:
@@ -553,9 +607,10 @@ def process_accounting_emails(dry_run: bool = False, limit: int = 50, no_move: b
             continue
 
         attachment_names = [a.get('name', '') for a in attachments]
+        body_text = full_email.get('body', {}).get('content', '') if isinstance(full_email.get('body'), dict) else ''
 
         # Accounting relevance check
-        if not is_accounting_email(sender_email, subject, attachment_names):
+        if not is_accounting_email(sender_email, subject, attachment_names, body_text):
             print(f'  SKIP (non-accounting): {sender_email} / {subject[:50]}')
             summary['skipped'] += 1
             continue
